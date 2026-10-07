@@ -1,0 +1,13 @@
+[package]
+name = "mini-ffmpeg-sys"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+readme = "README.md"
+# FFmpeg のソースと生成物、ライセンスをクレートの配布にも含める。
+include = ["Cargo.toml", "build.rs", "src/**", "tests/**", "cinrs_manifest.toml", "FFmpeg/**", "FFmpeg_generated/**", "LICENSE.ffmpeg", "README.md"]
+
+publish = false # まだ開発が終わっておらず確認したい項目がまだ残っている。
+
+[dependencies]
+cinrs = "=0.2.0"

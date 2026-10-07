@@ -1,0 +1,10 @@
+[package]
+name = "remux-spike"
+version = "0.0.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[dependencies]
+cinrs = "=0.2.0"
+mini-ffmpeg-sys = { path = "../mini-ffmpeg-sys" }

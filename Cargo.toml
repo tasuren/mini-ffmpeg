@@ -1,0 +1,13 @@
+[workspace]
+resolver = "3"
+members = ["mini-ffmpeg", "mini-ffmpeg-sys", "remux-spike", "xtask"]
+
+# xtask は開発時にだけ使うコマンドなので、素の `cargo build` や `cargo run` の
+# 対象からは外す。実行は `cargo xtask <タスク名>`、テストは `cargo test -p xtask`。
+#
+# remux-spike は、取り込んだ FFmpeg が実際に動くかを確かめるための仮のクレート。
+# 同じく対象から外している。
+default-members = ["mini-ffmpeg", "mini-ffmpeg-sys"]
+
+[workspace.package]
+license = "LGPL-2.1-or-later"
