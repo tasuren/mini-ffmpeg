@@ -1,0 +1,3 @@
+[submodule "FFmpeg"]
+	path = mini-ffmpeg-sys/FFmpeg
+	url = https://github.com/FFmpeg/FFmpeg.git
