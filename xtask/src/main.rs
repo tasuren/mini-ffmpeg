@@ -6,6 +6,7 @@
 //! FFmpeg の `configure` や `make` を必要とする作業をここに閉じ込め、その結果を
 //! コミットしておくことで、通常のビルドを Cargo だけで完結させるのが狙い。
 
+mod ffmpeg_license;
 mod ffmpeg_manifest;
 
 use std::{
@@ -31,6 +32,8 @@ const USAGE: &str = "\
 タスク:
   ffmpeg-manifest  FFmpeg を最小構成でビルドし、取り込む対象の一覧と
                    生成された設定ファイルを mini-ffmpeg-sys に書き出す
+  ffmpeg-license   manifest の入力ファイルを licensecheck で検査する
+                   オプションは cargo xtask ffmpeg-license --help を参照
 
 FFmpeg のバージョンや構成を変えたときに実行する。一覧の翻訳単位を Rust に
 変換するのは mini-ffmpeg-sys の build.rs で、タスクとして実行する必要は無い。";
@@ -52,14 +55,15 @@ fn main() -> ExitCode {
     let mut args = env::args().skip(1);
     let task = args.next();
 
-    // 引数を取るタスクはまだ無い。余分な引数を黙って捨てると、指定したつもりの
-    // 内容が効いていないことに気づけないので、エラーにする。
-    if let Some(extra) = args.next() {
-        eprintln!("error: 余分な引数です: {extra}\n\n{USAGE}");
+    let args: Vec<String> = args.collect();
+
+    if task.as_deref() != Some("ffmpeg-license") && !args.is_empty() {
+        eprintln!("error: 余分な引数です: {}\n\n{USAGE}", args.join(" "));
         return ExitCode::FAILURE;
     }
 
     let result = match task.as_deref() {
+        Some("ffmpeg-license") => ffmpeg_license::run(&args),
         Some("ffmpeg-manifest") => ffmpeg_manifest::run(),
 
         Some("help" | "--help" | "-h") | None => {

@@ -76,6 +76,33 @@ proc-macro を既定では最適化せずにコンパイルするので、ワー
 opt-level = 3
 ```
 
+## FFmpeg 入力のライセンス検査
+
+`cinrs_manifest.toml` に列挙された C ソース、ヘッダ、`FFmpeg_generated/` の
+ファイルを、`licensecheck` で全文検査できます。
+
+```sh
+cargo xtask ffmpeg-license
+cargo xtask ffmpeg-license --docker
+cargo xtask ffmpeg-license --native --output target/license-report
+```
+
+Linux では PATH にある `licensecheck` を直接実行します。Debian なら
+`apt install licensecheck` で準備できます。macOS と Windows は Docker が既定で、
+Debian trixie の検査用イメージを初回にビルドします。その後は Docker の
+ビルドキャッシュを使います。`--docker` と `--native` で実行方法を指定できます。
+この検査に C コンパイラや FFmpeg の再ビルドは必要ありません。
+
+既定の出力先は `target/xtask/ffmpeg-license/` です。
+`report.md` に検出値ごとの集計・全ファイル一覧とツールのバージョン、
+`licensecheck.tsv` にファイルごとの検出値と著作権表示を保存します。
+`versions.txt` と、検査に使った一覧のコピー `manifest.toml` も残します。
+`--output` の相対パスは実行したディレクトリが基準です。
+
+結果は自動検出値です。IJG の表示も `UNKNOWN` になる場合があり、複数検出時の
+`and/or` は適用ライセンスを確定するものではありません。システムヘッダや
+cinrs / Cargo の依存は、この検査の対象に含まれません。
+
 ## ライセンス
 
 本プロジェクトのコードは GNU Lesser General Public License version 2.1
