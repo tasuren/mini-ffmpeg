@@ -71,6 +71,53 @@ cargo xtask ffmpeg-manifest
 `FFmpeg_generated/` は再生成時に置き換えられるため、説明や手書きのファイルは
 その外に置いています。
 
+### LGPL 以外のライセンスのファイル
+
+FFmpeg には、LGPL 以外のライセンスの表示を持つファイルがあります。現在の構成で
+使うファイルでは、次のものが該当します。条件の原文は各ファイルにあります。
+サブモジュール内の [LICENSE.md](FFmpeg/LICENSE.md) も参照してください。
+
+| ライセンス | ファイル |
+| --- | --- |
+| IJG（libjpeg 由来） | `libavcodec/jfdctfst.c`、`libavcodec/jfdctint_template.c`、`libavcodec/jrevdct.c` |
+| BSD-3-Clause（LGPL の表示と併記） | `libavutil/fixed_dsp.c`、`libavutil/fixed_dsp.h`、`libavutil/uuid.c` |
+| BSL-1.0（LGPL の表示と併記。一部の関数が対象） | `libavutil/mathematics.c`、`libavutil/libm.h` |
+| ISC | `libavcodec/faandct.c` |
+| MIT | `libavutil/avsscanf.c` |
+| Zlib | `libavutil/adler32.c` |
+
+それ以外のファイルの表示は LGPL 2.1 or later のみです。`FFmpeg_generated/` の
+生成物には、ライセンスの表示がありません。
+
+#### Independent JPEG Group のクレジット
+
+libjpeg 由来の 3 つのファイルについて、次のクレジットを記します。
+
+> This software is based in part on the work of the Independent JPEG Group.
+
+- 3 つのファイルは、FFmpeg のツリーにあるものをそのまま使っています。本クレートで
+  加えた追加、削除、変更はありません。FFmpeg が libjpeg のファイルに加えた変更は、
+  FFmpeg のリポジトリの履歴を参照してください。
+- 著作権の表示、無保証の表示、配布の条件は、各ファイルの先頭にあります。
+- 本クレートを使ったプログラムを実行ファイルだけの形で配布する場合は、付属の
+  文書に上記のクレジットを入れる必要があります。
+
+#### 実行ファイルを配布する場合
+
+本クレートを使ったプログラムをビルドすると、FFmpeg のコードがその実行ファイルに
+含まれます。その実行ファイルを配布する場合、配布する人は各ライセンスの条件を
+満たす必要があります。次の一覧は、気づくための手掛かりとして挙げるもので、
+網羅的なものでも、法的な助言でもありません。**条件は原文で確認してください。**
+
+- LGPL 2.1: 受け取った人がライブラリの部分を差し替えられるようにすることなどを
+  求めています。Rust のクレートは既定で静的にリンクされる点に注意してください。
+  FFmpeg による説明が <https://ffmpeg.org/legal.html> にあります。
+- BSD-3-Clause、MIT、ISC: 著作権の表示と許諾の文面を、原文のまま配布物に含める
+  ことを求めています。BSD-3-Clause は、実行ファイルの形での配布について、付属の
+  文書などに載せることを明記しています。
+- IJG: 上記のクレジットを、付属の文書に入れることを求めています。
+- BSL-1.0、Zlib: 表示を保つことを求めているのは、ソースの配布についてです。
+
 ### クレートへの同梱
 
 `Cargo.toml` の `include` で、`LICENSE.ffmpeg`、この README、FFmpeg のソース、

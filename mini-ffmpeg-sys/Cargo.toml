@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 # FFmpegの使うコードに含まれるライセンスを列挙している。
 # 詳細は `README.md` が参考になる。
-license.workspace = true
+license = "LGPL-2.1-or-later AND BSD-3-Clause AND BSL-1.0 AND IJG AND ISC AND MIT AND Zlib"
 readme = "README.md"
 # FFmpeg のソースと生成物、ライセンスをクレートの配布にも含める。ビルドスクリプトが
 # FFmpeg のソースを読んで Rust に変換するので、ソースが無いとビルドできない。

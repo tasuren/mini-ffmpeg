@@ -82,11 +82,14 @@ opt-level = 3
 or later（SPDX: `LGPL-2.1-or-later`）で提供します。
 そのライセンス文書は [LICENSE](LICENSE) から確認ができます。
 
-`mini-ffmpeg-sys` には FFmpeg のソース、変更したコピー、およびビルドシステムの
-生成物が含まれます。由来・変更内容・適用ライセンスについては
+`mini-ffmpeg-sys` には FFmpeg のソースと、ビルドシステムの生成物が含まれます。
+由来・適用ライセンスについては
 [mini-ffmpeg-sys の README](mini-ffmpeg-sys/README.md) を参照してください。
 由来にあたる FFmpeg の LGPL 2.1 の全文は [LICENSE.ffmpeg][LICENSE-FFmpeg]
 にあります。
+
+FFmpeg には libjpeg に由来するファイルが含まれます。
+This software is based in part on the work of the Independent JPEG Group.
 
 `remux-spike` は MIT ライセンスの FFmpeg サンプルコードを取り込む。
 
