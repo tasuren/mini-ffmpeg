@@ -1,4 +1,4 @@
-//! FFmpeg を最小構成でビルドし、cinrs で取り込む対象を一覧にするタスク。
+//! FFmpeg を最小構成でビルドし、その内容をビルドマニフェストとして書き出すタスク。
 //!
 //! どの `.c` がコンパイルされるかは、FFmpeg の `Makefile` を読むだけでは決まらない。
 //! 部品どうしの依存が `configure` の中にあり、有効にした部品が別の部品を裏で
@@ -10,7 +10,7 @@
 //!    インクルードディレクトリやマクロ定義がここから分かる。
 //! 3. `make` で実際にビルドする。コンパイラが翻訳単位ごとに書き出す依存関係
 //!    ファイル（`.d`）から、include されたファイルが分かる。
-//! 4. 一覧を `cinrs_manifest.toml` に書き出し、`configure` と `make` の生成物の
+//! 4. ビルドマニフェストを `cinrs_manifest.toml` に書き出し、`configure` と `make` の生成物の
 //!    うち必要なものを `FFmpeg_generated/` にコピーする。
 //!
 //! 読み書きする場所は、すべて `mini-ffmpeg-sys` の中にある。FFmpeg のツリーは
@@ -129,7 +129,7 @@ pub fn run() -> Result<()> {
     let paths = Paths::locate()?;
 
     // 前回のビルドの `.o` や `.d` が残っていると、今の構成ではコンパイルされない
-    // ファイルが一覧に紛れ込む。毎回、空のディレクトリからやり直す。
+    // ファイルがビルドマニフェストに紛れ込む。毎回、空のディレクトリからやり直す。
     if paths.build_dir.exists() {
         fs::remove_dir_all(&paths.build_dir)?;
     }
@@ -255,7 +255,7 @@ fn run_logged(mut command: Command, log_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// ビルド結果とコンパイルコマンドから、取り込む対象の一覧を組み立てる。
+/// ビルド結果とコンパイルコマンドから、ビルドマニフェストを組み立てる。
 fn collect(paths: &Paths, commands: &[CompileCommand]) -> Result<Manifest> {
     check_built_objects(paths, commands)?;
 
@@ -358,7 +358,7 @@ impl Dependency {
 
 /// 全翻訳単位のフラグが同じであることを確かめ、その共通のフラグを返す。
 ///
-/// 一覧には、フラグを全体で 1 組だけ書き出す。翻訳単位ごとに違うフラグが
+/// ビルドマニフェストには、フラグを全体で 1 組だけ書き出す。翻訳単位ごとに違うフラグが
 /// あるのにそれを捨てると、元のビルドと違う内容で取り込むことになる。
 /// 違いが出た時点で、翻訳単位ごとに持つ形へ変える必要がある。
 ///
@@ -366,7 +366,7 @@ impl Dependency {
 /// `--enable-hardcoded-tables` では、テーブルを書き出すプログラム
 /// （`libavcodec/pcm_tablegen.c` など）が、ライブラリの翻訳単位と同じ形の
 /// コマンドでコンパイルされる。コマンドの形では区別できないが、フラグが違う
-/// （`-DHAVE_AV_CONFIG_H` が付かない）ので、翻訳単位として一覧に入る前に
+/// （`-DHAVE_AV_CONFIG_H` が付かない）ので、翻訳単位としてビルドマニフェストに入る前に
 /// ここでエラーになる。
 fn common_flags(commands: &[CompileCommand]) -> Result<CompileFlags> {
     let first = &commands[0];
@@ -388,7 +388,7 @@ fn common_flags(commands: &[CompileCommand]) -> Result<CompileFlags> {
 /// 一致することを確かめる。
 ///
 /// コンパイルコマンドの読み取りは、コマンドの形についての前提に依存している。
-/// 前提が外れて翻訳単位を取りこぼした場合に、欠けた一覧を黙って書き出さない
+/// 前提が外れて翻訳単位を取りこぼした場合に、欠けたビルドマニフェストを黙って書き出さない
 /// ための検査。
 fn check_built_objects(paths: &Paths, commands: &[CompileCommand]) -> Result<()> {
     let expected: BTreeSet<String> = commands

@@ -1,4 +1,4 @@
-//! manifest が列挙する FFmpeg 入力を licensecheck で全文検査する。
+//! ビルドマニフェストが列挙する FFmpeg 入力を licensecheck で全文検査する。
 //!
 //! 自動検出値をそのまま保存し、IJG の補完や複数ライセンスの法的な解釈は行わない。
 //! Docker の Debian は検査環境にだけ使い、FFmpeg の構成は変更しない。
@@ -37,7 +37,7 @@ Docker は Debian trixie の検査用イメージをビルドし、キャッシ�
 Linux の直接実行には licensecheck のインストールが必要（Debian: apt install licensecheck）。
 既定の出力先: target/xtask/ffmpeg-license（--output は作業ディレクトリ基準）。
 出力: report.md、licensecheck.tsv、versions.txt、manifest.toml。
-検査対象は manifest の sources 全体。システムヘッダと Cargo 依存は含まない。";
+検査対象はビルドマニフェストの sources 全体。システムヘッダと Cargo 依存は含まない。";
 
 /// 明示指定が無ければ、Linux だけローカルのツールを使う。
 #[derive(Debug)]
@@ -117,7 +117,7 @@ pub fn run(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// manifest の分類を保持しつつ、クレート基準のパスで重複を除く。
+/// ビルドマニフェストの分類を保持しつつ、クレート基準のパスで重複を除く。
 fn inputs(manifest: &str) -> Result<BTreeMap<String, String>> {
     let table: toml::Table = manifest.parse()?;
     let sources = table
@@ -146,7 +146,7 @@ fn inputs(manifest: &str) -> Result<BTreeMap<String, String>> {
             let path = value
                 .as_str()
                 .ok_or("ファイルのパスが文字列ではありません")?;
-            // manifest のパスは OS に依存しない '/' 区切り。検査対象がマウント外や
+            // ビルドマニフェストのパスは OS に依存しない '/' 区切り。検査対象がマウント外や
             // TSV の別行に逃げないよう、曖昧な要素と制御文字を受け付けない。
             if path.is_empty()
                 || path.contains('\\')
@@ -297,7 +297,7 @@ fn report(
         groups.entry(license).or_default().push(path);
     }
     let mut out = format!(
-        "# FFmpeg licensecheck report\n\n実行方法: {}。対象: {} ファイル。\n\nmanifest の sources（翻訳単位・include 専用ソース・ヘッダ・生成物）を全文検査。\nシステムヘッダ、cinrs / Cargo 依存、manifest 外のファイルは対象外。\nプリプロセッサの分岐や最終バイナリへの到達性は判定しない。\n\nUNKNOWN はライセンス不適用を意味しない。IJG の表示も UNKNOWN になる場合がある。\nand/or は検出ツールの出力であり、選択可能なライセンスや確定した SPDX 式を意味しない。\n\n検査オプション: `{}`\n\n## ツールのバージョン\n\n```text\n{}\n```\n\n## 集計\n\n| 検出値 | ファイル数 |\n| --- | ---: |\n",
+        "# FFmpeg licensecheck report\n\n実行方法: {}。対象: {} ファイル。\n\nビルドマニフェストの sources（翻訳単位・include 専用ソース・ヘッダ・生成物）を全文検査。\nシステムヘッダ、cinrs / Cargo 依存、ビルドマニフェスト外のファイルは対象外。\nプリプロセッサの分岐や最終バイナリへの到達性は判定しない。\n\nUNKNOWN はライセンス不適用を意味しない。IJG の表示も UNKNOWN になる場合がある。\nand/or は検出ツールの出力であり、選択可能なライセンスや確定した SPDX 式を意味しない。\n\n検査オプション: `{}`\n\n## ツールのバージョン\n\n```text\n{}\n```\n\n## 集計\n\n| 検出値 | ファイル数 |\n| --- | ---: |\n",
         if docker {
             "Docker / Debian trixie"
         } else {
@@ -334,7 +334,7 @@ mod tests {
         )
     }
 
-    /// manifest は全 OS で同じ形式。Windows の絶対パスや親参照も拒否する。
+    /// ビルドマニフェストは全 OS で同じ形式。Windows の絶対パスや親参照も拒否する。
     #[test]
     fn rejects_paths_outside_scan_roots() {
         for path in ["../foo.c", "/foo.c", "C:/foo.c", "a\\b.c", "a\nb.c"] {

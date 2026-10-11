@@ -1,4 +1,4 @@
-//! 取り込む対象の一覧（`cinrs_manifest.toml`）のデータと、その書き出し。
+//! ビルドマニフェスト（`cinrs_manifest.toml`）のデータと、その書き出し。
 
 use std::{fmt::Write as _, path::Path};
 
@@ -277,7 +277,7 @@ mod tests {
     }
 
     /// `compat` 以下のディレクトリは絶対パスで渡される。生成したマシンのパスが
-    /// 一覧に残らないよう、ツリーからの相対パスに直すこと。
+    /// ビルドマニフェストに残らないよう、ツリーからの相対パスに直すこと。
     #[test]
     fn classifies_absolute_path_inside_ffmpeg_tree() {
         assert_eq!(
@@ -298,7 +298,7 @@ mod tests {
         assert!(IncludeDir::classify("/opt/homebrew/include", Path::new("/work/FFmpeg")).is_err());
     }
 
-    /// 一覧に書き出すパスは、取り込みのコードの `#pragma cinrs include_path` に
+    /// ビルドマニフェストに書き出すパスは、取り込みのコードの `#pragma cinrs include_path` に
     /// そのまま書く。起点そのもの（`.`）のときに `FFmpeg/.` のような余計な要素を
     /// 付けないこと。
     #[test]

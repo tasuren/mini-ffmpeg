@@ -11,14 +11,18 @@ Command Line Tools）が必要です。現在対応しているターゲット�
 特に関連するファイル:
 
 - `build.rs`、`build/`: FFmpeg の C コードを Rust に変換するビルドスクリプト
-- `cinrs_manifest.toml`: ツールにより生成された取り込み情報
+- `cinrs_manifest.toml`: ツールにより生成されたビルドマニフェスト
 - `FFmpeg`: 上流 FFmpeg のサブモジュール
 - `FFmpeg_generated`: `make`/`configure` が生成したファイル群
 - `LICENSE.ffmpeg`: 使用している FFmpeg の構成におけるライセンス全文
 
 ## ビルドの流れ
 
-ビルドスクリプトが `cinrs_manifest.toml` にある FFmpeg の `.c` を一つずつ Rust に
+ビルドマニフェスト（`cinrs_manifest.toml`）は、FFmpeg を一度ビルドして読み取った、
+ビルドの内容の宣言です。どのファイルを、どの指定でコンパイルするかを含みます。
+ツールが生成し、手では編集しません。
+
+ビルドスクリプトがビルドマニフェストにある FFmpeg の `.c` を一つずつ Rust に
 変換し、Cargo の出力用のディレクトリに書き出します。`src/lib.rs` がそれを
 読み込みます（`libavutil/time.c` は `libavutil::time` になります）。
 
@@ -58,7 +62,7 @@ FFmpeg 全体には異なるライセンスのファイルも含まれるため�
 現在の構成では GPL、nonfree、version3 オプションを有効にしていません。
 `config.h` のコンパイラ識別文字列は、生成時の環境を示す情報です。
 
-リポジトリのルートで次のコマンドを実行すると、構成ファイルと取り込み対象の一覧を
+リポジトリのルートで次のコマンドを実行すると、構成ファイルとビルドマニフェストを
 再生成できます。FFmpeg のサブモジュール、C コンパイラ、`make` が必要です。
 FFmpeg のバージョンや構成を変えるときだけ実行します。
 

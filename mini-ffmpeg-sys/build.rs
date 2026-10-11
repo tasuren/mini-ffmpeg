@@ -1,6 +1,6 @@
 //! FFmpeg の C のコードを、cinrs で Rust のコードに変換する。
 //!
-//! 一覧（`cinrs_manifest.toml`）の翻訳単位を 1 つずつ変換し、Cargo が用意する
+//! ビルドマニフェスト（`cinrs_manifest.toml`）の翻訳単位を 1 つずつ変換し、Cargo が用意する
 //! 出力用のディレクトリ（`OUT_DIR`）に書き出す。`src/lib.rs` が、それを読み込む。
 //!
 //! - `<ライブラリ>/<名前>.rs`: 翻訳単位 1 つを変換したもの。
@@ -47,7 +47,7 @@ use self::translate::{Settings, Translated};
 /// エラーは表示して終了するだけなので、型を分けずに文字列で扱う。
 type Result<T> = std::result::Result<T, String>;
 
-/// 取り込む対象の一覧。`cargo xtask ffmpeg-manifest` が書き出す。
+/// ビルドマニフェスト。`cargo xtask ffmpeg-manifest` が書き出す。
 const MANIFEST_FILE: &str = "cinrs_manifest.toml";
 
 /// FFmpeg のツリー（サブモジュール）。
@@ -107,7 +107,7 @@ fn run() -> Result<()> {
     check_target(&manifest, &target)?;
     require_ffmpeg_tree()?;
 
-    // 翻訳単位を名前の順に並べ、重複を除く。出力を、一覧の側の順序に
+    // 翻訳単位を名前の順に並べ、重複を除く。出力を、ビルドマニフェストの側の順序に
     // 左右されないようにするため。
     let units: Vec<Unit> = manifest
         .translation_units
@@ -168,13 +168,13 @@ fn cargo_env(name: &str) -> Result<String> {
     env::var(name).map_err(|error| format!("環境変数 {name} を読めません: {error}"))
 }
 
-/// 一覧のうち、変換に使う部分。
+/// ビルドマニフェストのうち、変換に使う部分。
 #[derive(Debug)]
 struct Manifest {
-    /// 一覧を作ったマシンのアーキテクチャ。`std::env::consts::ARCH` の値。
+    /// ビルドマニフェストを作ったマシンのアーキテクチャ。`std::env::consts::ARCH` の値。
     host_arch: String,
 
-    /// 一覧を作ったマシンの OS。`std::env::consts::OS` の値。
+    /// ビルドマニフェストを作ったマシンの OS。`std::env::consts::OS` の値。
     host_os: String,
 
     /// C の規格。`-std=` の値と同じ書き方。

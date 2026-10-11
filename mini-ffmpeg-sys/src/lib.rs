@@ -20,7 +20,7 @@
 //!
 //! - `FFmpeg/`: FFmpeg のツリー。Git のサブモジュール。
 //! - `FFmpeg_generated/`: FFmpeg の `configure` と `make` が生成したファイル。
-//! - `cinrs_manifest.toml`: 取り込む対象の一覧。
+//! - `cinrs_manifest.toml`: ビルドマニフェスト。FFmpeg を一度ビルドして読み取った内容を記したもの。
 //!
 //! 後ろの 2 つは `cargo xtask ffmpeg-manifest` の生成物で、手では編集しない。
 

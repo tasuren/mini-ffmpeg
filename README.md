@@ -54,7 +54,7 @@ CLI もライブラリの API もまだありません。
 | `mini-ffmpeg`     | CLI とライブラリ。まだ未実装で中身がありません。                                    |
 | `mini-ffmpeg-sys` | cinrs でライブラリを取り込むクレート。このフォルダにFFmpeg のサブモジュールがある。 |
 | `remux-spike`     | 取り込んだ FFmpeg が実際に動くかを確かめるための、仮のクレート。                    |
-| `xtask`           | 取り込む対象の一覧とRustの取り込みコードを生成する開発用のツール。                  |
+| `xtask`           | ビルドマニフェストとRustの取り込みコードを生成する開発用のツール。                  |
 
 ## 動作方法
 
@@ -96,7 +96,7 @@ Debian trixie の検査用イメージを初回にビルドします。その後
 既定の出力先は `target/xtask/ffmpeg-license/` です。
 `report.md` に検出値ごとの集計・全ファイル一覧とツールのバージョン、
 `licensecheck.tsv` にファイルごとの検出値と著作権表示を保存します。
-`versions.txt` と、検査に使った一覧のコピー `manifest.toml` も残します。
+`versions.txt` と、検査に使ったビルドマニフェストのコピー `manifest.toml` も残します。
 `--output` の相対パスは実行したディレクトリが基準です。
 
 結果は自動検出値です。IJG の表示も `UNKNOWN` になる場合があり、複数検出時の

@@ -21,7 +21,7 @@ use std::{
 /// 文字列ベースで扱う。
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-/// 取り込む対象の一覧。`mini-ffmpeg-sys` からの相対パス。
+/// ビルドマニフェスト。`mini-ffmpeg-sys` からの相対パス。
 ///
 /// `ffmpeg-manifest` が書き出し、`mini-ffmpeg-sys` の `build.rs` が読む。
 const MANIFEST_FILE: &str = "cinrs_manifest.toml";
@@ -30,13 +30,13 @@ const USAGE: &str = "\
 使い方: cargo xtask <タスク名>
 
 タスク:
-  ffmpeg-manifest  FFmpeg を最小構成でビルドし、取り込む対象の一覧と
+  ffmpeg-manifest  FFmpeg を最小構成でビルドし、ビルドマニフェストと
                    生成された設定ファイルを mini-ffmpeg-sys に書き出す
-  ffmpeg-license   manifest の入力ファイルを licensecheck で検査する
+  ffmpeg-license   ビルドマニフェストの入力ファイルを licensecheck で検査する
                    オプションは cargo xtask ffmpeg-license --help を参照
 
-FFmpeg のバージョンや構成を変えたときに実行する。一覧の翻訳単位を Rust に
-変換するのは mini-ffmpeg-sys の build.rs で、タスクとして実行する必要は無い。";
+FFmpeg のバージョンや構成を変えたときに実行する。ビルドマニフェストの翻訳単位を
+Rust に変換するのは mini-ffmpeg-sys の build.rs で、タスクとして実行する必要は無い。";
 
 /// ワークスペースのルート。
 fn workspace_root() -> Result<&'static Path> {
