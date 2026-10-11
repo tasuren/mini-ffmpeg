@@ -1,12 +1,17 @@
-//! 取り込んだ FFmpeg が実際に動くかを確かめるための、仮のクレート。
+//! 変換した FFmpeg が実際に動くかを確かめるための、仮のクレート。
 //!
-//! FFmpeg のツリーにあるサンプルの `doc/examples/remux.c` を、cinrs でそのまま
-//! 取り込んでいる。このサンプルは、入力のコンテナからパケットを読み、再エンコード
-//! せずに出力のコンテナへ書く。`ffmpeg -i in -c copy out` と同じ処理に当たる。
+//! FFmpeg のツリーにあるサンプルの `doc/examples/remux.c` を、cinrs のマクロで
+//! そのまま取り込んでいる。このサンプルは、入力のコンテナからパケットを読み、
+//! 再エンコードせずに出力のコンテナへ書く。`ffmpeg -i in -c copy out` と同じ処理に
+//! 当たる。
 //!
-//! `mini-ffmpeg-sys` とは別のクレートにしているのは、試行錯誤のたびに FFmpeg 本体の
-//! マクロを展開し直さずに済ませるため。ここを変えても、再ビルドされるのは
-//! このクレートだけ。
+//! FFmpeg 本体（`mini-ffmpeg-sys`）は、開発時に変換した Rust のコードを持っていて、
+//! ビルドに cinrs を使わない。こちらは、ビルドのたびに cinrs のマクロが C を変換
+//! する。両者は C のシンボルの名前で繋がるので、変換の時期や cinrs のバージョンが
+//! 違っても、一緒に動く。
+//!
+//! マクロで取り込むために、このクレートのビルドには FFmpeg のツリーと、
+//! プラットフォームのヘッダが要る。
 
 use std::{
     ffi::{CString, c_char, c_int},
@@ -20,18 +25,24 @@ use std::{
 extern crate mini_ffmpeg_sys as _;
 
 mod remux_c {
-    // `mini-ffmpeg-sys` の翻訳単位との違い。
+    // マクロの中で、C コンパイラのオプションに当たる指定を再現してから、`.c` を
+    // 丸ごと include している。FFmpeg のソースには手を加えていない。
     //
     // - `#pragma cinrs export` を付けない。ここの関数は Rust から呼ぶだけで、
     //   他の翻訳単位から参照されない。
-    // - `HAVE_AV_CONFIG_H` などを定義せず、`config.h` も読まない。`remux.c` は
-    //   FFmpeg を使う側のプログラムで、公開のヘッダだけを include する。
+    // - `#pragma cinrs system_include first` で、プラットフォームのヘッダを
+    //   cinrs 同梱のヘッダより先に探させる。FFmpeg 本体の変換と同じ指定。
+    // - プラットフォーム用の回避策のヘッダを、プラットフォームのヘッダより前に
+    //   読む。隣の `cinrs_platform_fixups.h` で、cinrs は `.rs` ファイルの場所を
+    //   最初に探す。
+    // - `HAVE_AV_CONFIG_H` などを定義しない。`remux.c` は FFmpeg を使う側の
+    //   プログラムで、公開のヘッダだけを include する。
     // - `main` を別の名前に変える。Rust のプログラムの入口と衝突させず、普通の
     //   関数として呼べるようにするため。
     cinrs::c17! {
         #pragma cinrs system_include first
 
-        #include "../../mini-ffmpeg-sys/src/cinrs_platform_fixups.h"
+        #include "cinrs_platform_fixups.h"
 
         #pragma cinrs include_path "../mini-ffmpeg-sys/FFmpeg_generated"
         #pragma cinrs include_path "../mini-ffmpeg-sys/FFmpeg"

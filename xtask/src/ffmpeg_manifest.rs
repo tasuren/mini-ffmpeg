@@ -37,7 +37,7 @@ use self::{
     compile_command::{CompileCommand, CompileFlags},
     manifest::{IncludeDir, Manifest, to_slash_path},
 };
-use crate::{MANIFEST_FILE, Result, sys_crate_dir, workspace_root};
+use crate::{FFMPEG_DIR, MANIFEST_FILE, Result, sys_crate_dir, workspace_root};
 
 /// `configure` に渡す引数。取り込む FFmpeg の構成は、ここが唯一の定義になる。
 const CONFIGURE_ARGS: &[&str] = &[
@@ -68,9 +68,6 @@ const CONFIGURE_ARGS: &[&str] = &[
     "--enable-muxer=wav",
     "--enable-protocol=file,pipe",
 ];
-
-/// FFmpeg のツリー（サブモジュール）。`mini-ffmpeg-sys` からの相対パス。
-const FFMPEG_DIR: &str = "FFmpeg";
 
 /// `configure` と `make` の生成物のコピー先。`mini-ffmpeg-sys` からの相対パス。
 ///

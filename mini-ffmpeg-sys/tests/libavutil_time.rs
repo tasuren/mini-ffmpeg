@@ -1,4 +1,4 @@
-//! `libavutil/time.c` を cinrs で取り込んだ結果を、Rust から呼んで確かめる。
+//! `libavutil/time.c` を cinrs で変換した結果を、Rust から呼んで確かめる。
 //!
 //! `time.c` はプラットフォームのヘッダ（`<sys/time.h>`、`<unistd.h>`）を使い、
 //! `gettimeofday` や `clock_gettime`、`nanosleep` を呼ぶ。プラットフォームの
@@ -12,9 +12,10 @@ use mini_ffmpeg_sys::libavutil::time;
 /// `av_gettime` は、UNIX エポックからのマイクロ秒を返す。Rust の時計と
 /// 突き合わせて、単位と基準が合っていることを確かめる。
 ///
-/// SDK のヘッダは `gettimeofday` などの宣言にシンボル名のラベルを付けている。
-/// これを cinrs が誤ったシンボル名に変換すると、このテストはリンクで失敗する
-/// （`cinrs_platform_fixups.h` を参照）。
+/// macOS の SDK のヘッダは、`nanosleep` などの宣言に `__asm("_nanosleep")` の形で
+/// シンボル名のラベルを付けている。これを cinrs が誤ったシンボル名に変換すると、
+/// このテストはリンクで失敗する。cinrs 0.2.0 は、先頭に `_` が余分に付いた名前に
+/// 変換していた。
 #[test]
 fn av_gettime_returns_microseconds_since_unix_epoch() {
     let before = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();

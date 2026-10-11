@@ -2,9 +2,13 @@
 //!
 //! `cargo xtask <タスク名>` で実行する（`.cargo/config.toml` のエイリアス）。
 //!
-//! ここにあるのはメンテナが開発時に使う処理だけで、利用者のビルドでは実行されない。
-//! FFmpeg の `configure` や `make` を必要とする作業をここに閉じ込め、その結果を
-//! コミットしておくことで、通常のビルドを Cargo だけで完結させるのが狙い。
+//! ここにあるのは開発時に使う処理だけで、通常のビルドでは実行されない。
+//! FFmpeg の `configure` や `make` を必要とする作業と、C から Rust への変換を
+//! ここに閉じ込め、通常のビルドを Cargo だけで完結させるのが狙い。
+//!
+//! `ffmpeg-manifest` の結果はコミットしてある。`ffmpeg-units` の結果（変換後の
+//! Rust のコード）は、今はコミットしていないので、クローンした直後に一度
+//! 実行する必要がある。理由は `ffmpeg_units` の説明にある。
 
 mod ffmpeg_manifest;
 mod ffmpeg_units;
@@ -26,14 +30,20 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 /// `ffmpeg-manifest` が書き出し、`ffmpeg-units` が読む。
 const MANIFEST_FILE: &str = "cinrs_manifest.toml";
 
+/// FFmpeg のツリー（サブモジュール）。`mini-ffmpeg-sys` からの相対パス。
+const FFMPEG_DIR: &str = "FFmpeg";
+
+/// xtask を実行しているマシンのターゲットトリプル。`build.rs` が埋め込む。
+const HOST_TARGET: &str = env!("XTASK_HOST_TARGET");
+
 const USAGE: &str = "\
 使い方: cargo xtask <タスク名>
 
 タスク:
   ffmpeg-manifest  FFmpeg を最小構成でビルドし、取り込む対象の一覧と
                    生成された設定ファイルを mini-ffmpeg-sys に書き出す
-  ffmpeg-units     一覧から、cinrs で取り込むための Rust のコードを
-                   mini-ffmpeg-sys/src に生成する
+  ffmpeg-units     一覧の翻訳単位を cinrs で Rust のコードに変換し、
+                   mini-ffmpeg-sys/targets/<ターゲット> に書き出す
 
 FFmpeg のバージョンや構成を変えたときは、この順に両方を実行する。";
 

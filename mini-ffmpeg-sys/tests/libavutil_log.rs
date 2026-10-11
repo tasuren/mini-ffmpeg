@@ -1,8 +1,10 @@
-//! `libavutil/log.c` を cinrs で取り込んだ結果を、Rust から呼んで確かめる。
+//! `libavutil/log.c` を cinrs で変換した結果を、Rust から呼んで確かめる。
 //!
-//! `log.c` は手書きの取り込みで、変更を加えたソースのコピーを読んでいる。
-//! 変更したのはコールバックを保持する変数の型なので、コールバックの設定と
-//! 呼び出しが、変更の前と同じ意味で動くことをここで確かめる。
+//! `log.c` は、コールバックの関数のアドレスを整数（`uintptr_t`）にキャストして、
+//! アトミックな変数に保持している。関数のアドレスを整数にした値は、Rust の
+//! `static` の初期化子に書けないので、cinrs はこの変数をポインタとして持つ形に
+//! 変換する。コールバックの設定と呼び出しが、その形で正しく動くことをここで
+//! 確かめる。cinrs 0.2.0 はこの初期化を変換できなかった。
 //!
 //! `av_log` は可変長引数の関数で、書式の展開まで C の側で行う。Rust から渡した
 //! 可変長の引数が、取り込んだ C のコードを通って、C ライブラリの `vsnprintf`
@@ -55,8 +57,8 @@ unsafe extern "C" fn capture(avcl: *mut c_void, level: c_int, format: *const c_c
 fn av_log_calls_the_configured_callback() {
     unsafe {
         // 既定のコールバック。標準エラー出力に書くので、内容までは確かめない。
-        // 変更を加えた変数の初期値（既定のコールバックのアドレス）を通る経路で、
-        // 初期化が壊れていれば、ここで不正なアドレスを呼んで落ちる。
+        // コールバックを保持する変数の初期値（既定のコールバックのアドレス）を
+        // 通る経路で、初期化が壊れていれば、ここで不正なアドレスを呼んで落ちる。
         log::av_log(
             ptr::null_mut(),
             AV_LOG_INFO,
@@ -78,8 +80,8 @@ fn av_log_calls_the_configured_callback() {
         );
         log::av_log(ptr::null_mut(), AV_LOG_ERROR, c"error level\n".as_ptr());
 
-        // `NULL` を設定すると、何も呼ばれなくなる。変更の前は整数の 0 との比較、
-        // 変更の後は関数ポインタの `NULL` との比較で、意味が変わっていないこと。
+        // `NULL` を設定すると、何も呼ばれなくなる。C の側は整数の 0 との比較で、
+        // 変換後はポインタの `NULL` との比較になる。意味が変わっていないこと。
         log::av_log_set_callback(None);
         log::av_log(ptr::null_mut(), AV_LOG_INFO, c"dropped\n".as_ptr());
     }

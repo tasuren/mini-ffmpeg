@@ -1,5 +1,5 @@
 /*
- * cinrs でプラットフォームのヘッダを読むための回避策。
+ * cinrs のマクロでプラットフォームのヘッダを読むための回避策。
  *
  * プラットフォームのヘッダは、そのプラットフォームの C コンパイラ（macOS なら
  * Apple clang）に読まれる前提で書かれている。cinrs は GCC として振る舞うので、
@@ -9,13 +9,15 @@
  * `#pragma cinrs system_include first` を使う翻訳単位は、プラットフォームの
  * ヘッダを include する前に、このファイルを include する。
  *
- * どの項目も cinrs 0.2.0 と macOS 27 の SDK の組み合わせで必要だったもので、
- * cinrs の側で直れば消せる。消すときは、その項目を外しても
- * `cargo test -p mini-ffmpeg-sys` が通ることを確かめる。
+ * どの項目も cinrs 0.2.0 と macOS 27 の SDK の組み合わせで必要だったもの。
+ * `_Float16` の件を除いて、0.2.0 より後の cinrs では直っている。FFmpeg 本体
+ * （`mini-ffmpeg-sys`）の変換は新しい cinrs で行っていて、このファイルを
+ * 使わない。このクレートが使う cinrs を上げたら、項目を 1 つずつ外して
+ * `cargo test -p remux-spike` が通ることを確かめ、消していける。
  */
 
-#ifndef MINI_FFMPEG_SYS_CINRS_PLATFORM_FIXUPS_H
-#define MINI_FFMPEG_SYS_CINRS_PLATFORM_FIXUPS_H
+#ifndef REMUX_SPIKE_CINRS_PLATFORM_FIXUPS_H
+#define REMUX_SPIKE_CINRS_PLATFORM_FIXUPS_H
 
 #if defined(__APPLE__)
 
@@ -102,4 +104,4 @@
 
 #endif /* __APPLE__ */
 
-#endif /* MINI_FFMPEG_SYS_CINRS_PLATFORM_FIXUPS_H */
+#endif /* REMUX_SPIKE_CINRS_PLATFORM_FIXUPS_H */

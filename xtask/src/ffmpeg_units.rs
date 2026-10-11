@@ -1,58 +1,58 @@
-//! 一覧（`cinrs_manifest.toml`）から、cinrs で取り込むための Rust のコードを
-//! 生成するタスク。
+//! 一覧（`cinrs_manifest.toml`）の翻訳単位を、cinrs で Rust のコードに変換するタスク。
 //!
-//! FFmpeg の `.c` 1 つを、cinrs のマクロ呼び出し 1 つ（＝翻訳単位 1 つ）として
-//! 取り込む。生成するのは次の 2 種類のファイルで、どちらも `mini-ffmpeg-sys/src`
-//! に置く。
+//! FFmpeg の `.c` 1 つを、Rust のファイル 1 つに変換する。変換はこのタスクが
+//! 行い、`mini-ffmpeg-sys` のビルドは変換後のコードを読むだけになる。そのため、
+//! `mini-ffmpeg-sys` のビルドには cinrs も、FFmpeg のソースも、プラットフォームの
+//! ヘッダも要らない。
 //!
-//! - `<ライブラリ>/<名前>.rs`: 翻訳単位 1 つ分の取り込み。
-//! - `<ライブラリ>.rs`: そのライブラリの翻訳単位のモジュールの宣言。
+//! 生成物は、今はリポジトリに入れていない。変換後のコードには、プラットフォームの
+//! ヘッダの宣言やインライン関数も含まれ、再配布するときのライセンスの扱いが
+//! 決まっていないため。`mini-ffmpeg-sys` をビルドする前に、このタスクを実行する。
 //!
-//! このタスクは一覧を読むだけで、FFmpeg のツリーも C コンパイラも使わない。
-//! 取り込みの形や除外リストを変えたときは、このタスクだけを実行し直せば良い。
+//! 変換は、実行したマシンのプラットフォームのヘッダを読んで行う。結果はその
+//! ターゲット専用になるので、生成物は `mini-ffmpeg-sys/targets/<ターゲット>/` に
+//! ターゲットごとに分けて置く。
 //!
-//! # 生成物と手書きのファイルの区別
+//! - `rust/<ライブラリ>/<名前>.rs`: 翻訳単位 1 つを変換したもの。
+//! - `rust/<ライブラリ>.rs`: そのライブラリの翻訳単位のモジュールの宣言。
+//! - `rust/mod.rs`: ライブラリのモジュールの宣言。`src/lib.rs` がこれを読む。
+//! - `generator.toml`: 生成に使った cinrs のコミット。
 //!
-//! 生成したファイルには、先頭に [`GENERATED_MARKER`] を付ける。このタスクが
-//! 上書きしたり削除したりするのは、この印があるファイルだけ。印が無いファイルは
-//! 手書きとみなし、上書きが必要になった場合はエラーにして止まる。
+//! このタスクは C コンパイラを使わない。FFmpeg のツリーと、プラットフォームの
+//! ヘッダ（macOS なら Command Line Tools の SDK）は要る。変換の指定を変えたときは、
+//! このタスクだけを実行し直せば良い。
 //!
-//! # 例外の扱い
+//! # 生成物の管理
 //!
-//! cinrs でそのまま取り込めない翻訳単位は、[`EXCLUDED_UNITS`] に載せる。載せた
-//! 翻訳単位は、取り込みのファイルを生成しない。代わりに、同じ場所に手書きの
-//! ファイルがあることを確かめ、モジュールの宣言だけを生成する。こうすると、
-//! 手書きかどうかでモジュールのパスが変わらない。
+//! `rust/` は、このタスクが丸ごと管理する。生成したファイルには、先頭に
+//! [`GENERATED_MARKER`] を付ける。一覧から消えた翻訳単位のファイルは削除するが、
+//! 削除するのはこの印があるファイルだけ。印が無いファイルが `rust/` にあれば、
+//! 手で置いたものとみなし、何も書き出さずにエラーにして止まる。
+
+mod translate;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    env,
     fmt::Write as _,
     fs,
+    num::NonZero,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicUsize, Ordering},
+    thread,
 };
 
-use crate::{MANIFEST_FILE, Result, sys_crate_dir};
+use self::translate::{Settings, Translated};
+use crate::{FFMPEG_DIR, HOST_TARGET, MANIFEST_FILE, Result, sys_crate_dir};
 
-/// 取り込みのファイルを生成しない翻訳単位。FFmpeg のツリーからの相対パス。
-///
-/// ここに載せた翻訳単位は、`mini-ffmpeg-sys/src` の同じ場所（`libavutil/log.c`
-/// なら `src/libavutil/log.rs`）に、手書きの取り込みを置く必要がある。
-///
-/// 全翻訳単位に共通で入れられる回避策は、ここではなく
-/// `mini-ffmpeg-sys/src/cinrs_ffmpeg_fixups.h` に書く。除外が要るのは、
-/// FFmpeg のソースそのものを書き換えないと通らない場合だけ。
-const EXCLUDED_UNITS: &[&str] = &[
-    // 関数ポインタを整数にキャストした値で `static` の変数を初期化している。
-    //
-    //     static atomic_uintptr_t av_log_callback = (uintptr_t)av_log_default_callback;
-    //
-    // Rust の `static` の初期化子にはこの値を書けないので、cinrs が拒否する。
-    // プリプロセッサでは回避できず、ソースの書き換えが要る。上流では FFmpeg の
-    // コミット 4ce1a456f2 で `_Atomic` な関数ポインタに直されているので、その
-    // 修正を取り込んだコピーを `src/libavutil/log.c` に置いている。この修正を
-    // 含むバージョンに FFmpeg を上げたら、除外をやめられる。
-    "libavutil/log.c",
-];
+/// ターゲットごとの生成物を置くディレクトリ。`mini-ffmpeg-sys` からの相対パス。
+const TARGETS_DIR: &str = "targets";
+
+/// 変換した Rust のコードを置くディレクトリ。ターゲットのディレクトリからの相対パス。
+const RUST_DIR: &str = "rust";
+
+/// 生成に使った cinrs を記録するファイル。ターゲットのディレクトリからの相対パス。
+const GENERATOR_FILE: &str = "generator.toml";
 
 /// 生成したファイルの 1 行目に付ける印。
 ///
@@ -60,16 +60,24 @@ const EXCLUDED_UNITS: &[&str] = &[
 /// エディタやレビューのツールにも認識されるものがある。
 const GENERATED_MARKER: &str = "// @generated";
 
-/// プラットフォームのヘッダを読むための回避策のヘッダ。`mini-ffmpeg-sys/src` からの相対パス。
-const PLATFORM_FIXUPS_HEADER: &str = "cinrs_platform_fixups.h";
+/// xtask 自身の `Cargo.toml`。生成に使う cinrs のコミットを、ここから読む。
+///
+/// コンパイル時に埋め込むので、実行中の xtask がリンクしている cinrs と必ず
+/// 一致する。`Cargo.toml` を変えると、Cargo が xtask をビルドし直す。
+const XTASK_MANIFEST: &str = include_str!("../Cargo.toml");
 
-/// FFmpeg のコードを読むための回避策のヘッダ。`mini-ffmpeg-sys/src` からの相対パス。
-const FFMPEG_FIXUPS_HEADER: &str = "cinrs_ffmpeg_fixups.h";
+/// 変換と整形を行うスレッドのスタックの大きさ。
+///
+/// 変換後のコードの構文解析と整形は、式の入れ子の深さだけ再帰する。C のマクロが
+/// 展開された式は深くなりやすく、スレッドの既定の大きさ（2 MiB）に収まる保証が
+/// 無いので、余裕を持たせている。確保されるのは仮想メモリで、使わなかった分は
+/// 実メモリを消費しない。
+const WORKER_STACK_SIZE: usize = 64 << 20;
 
-/// 一覧のうち、取り込みのコードの生成に使う部分。
+/// 一覧のうち、変換に使う部分。
 #[derive(Debug)]
 struct Manifest {
-    /// C の規格。cinrs のマクロの名前（`c17!` など）を決める。
+    /// C の規格。`-std=` の値と同じ書き方。
     c_standard: String,
 
     /// マクロ定義。`NAME` または `NAME=VALUE` の形。
@@ -178,7 +186,7 @@ impl Unit {
         format!("{}/{}.c", self.library, self.name)
     }
 
-    /// 取り込みのファイル。`src` からの相対パス。
+    /// 変換したファイル。`rust/` からの相対パス。
     fn module_file(&self) -> PathBuf {
         Path::new(&self.library).join(format!("{}.rs", self.name))
     }
@@ -202,84 +210,124 @@ const RUST_KEYWORDS: &[&str] = &[
     "unsafe", "unsized", "use", "virtual", "where", "while", "yield",
 ];
 
-/// 翻訳単位 1 つ分の取り込みのファイルを組み立てる。
+/// すべての翻訳単位を変換する。結果は `units` と同じ順。
 ///
-/// FFmpeg のソースには手を加えず、元のビルドがコンパイラのオプションで渡して
-/// いた指定をマクロの中で再現してから、`.c` を丸ごと include する。並べる順に
-/// 意味があるので、順番を変えるときは注意する。
-///
-/// 1. `#pragma cinrs export`: 外部リンケージを持つものを実際の C シンボルにする。
-///    cinrs はマクロ呼び出し 1 つを独立した翻訳単位として扱うので、他の翻訳単位
-///    から名前で参照するために要る。
-/// 2. `#pragma cinrs system_include first`: プラットフォームのヘッダを、cinrs
-///    同梱のヘッダより先に探させる。`first` が無いと両者が混ざり、macOS では
-///    `int64_t` の定義が食い違ってエラーになる。`config.h` はプラットフォームの
-///    ヘッダを調べた結果なので、同じヘッダを読ませるのが筋でもある。
-/// 3. プラットフォーム用の回避策のヘッダ。プラットフォームのヘッダより前に
-///    読む必要があるので、インクルードディレクトリの指定より前に置く。
-/// 4. `#pragma cinrs include_path`: `-I` に当たる。元のビルドと同じ順。
-/// 5. `#define`: `-D` に当たる。
-/// 6. FFmpeg 用の回避策のヘッダ。FFmpeg のヘッダを先に読んでからマクロを定義し
-///    直すので、インクルードディレクトリとマクロ定義の後に置く。
-/// 7. `.c` の include。
-fn render_unit(manifest: &Manifest, unit: &Unit) -> Result<String> {
-    let source = unit.source_path();
-    let mut out = String::new();
+/// 翻訳単位は互いに独立なので、CPU のコアの数だけ並列に変換する。エラーに
+/// なった翻訳単位があれば、すべてをまとめて報告する。
+fn translate_units(settings: &Settings, units: &[Unit]) -> Result<Vec<Translated>> {
+    let next_index = AtomicUsize::new(0);
+    let worker_count = thread::available_parallelism().map_or(1, NonZero::get);
 
-    let _ = writeln!(
-        out,
-        "{GENERATED_MARKER} by `cargo xtask ffmpeg-units`. 手で編集しない。\n\
-         // 取り込みの形を変えるときは、xtask の `ffmpeg_units.rs` を変更して再生成する。\n\
-         \n\
-         //! `{source}` の取り込み。\n",
-    );
+    let work = || {
+        let mut finished = Vec::new();
 
-    let _ = writeln!(out, "cinrs::{}! {{", cinrs_macro(&manifest.c_standard)?);
-    let _ = writeln!(out, "    #pragma cinrs export");
-    let _ = writeln!(out, "    #pragma cinrs system_include first\n");
+        // 翻訳単位ごとに掛かる時間が大きく違うので、先に均等に分けず、
+        // 手の空いたスレッドが次の 1 つを取っていく。
+        while let Some(unit) = units.get(next_index.fetch_add(1, Ordering::Relaxed)) {
+            let source = Path::new(FFMPEG_DIR).join(unit.source_path());
+            finished.push((unit, settings.translate(&source)));
+        }
 
-    // 取り込みのファイルは `src/<ライブラリ>/` にあり、cinrs は `.rs` ファイルの
-    // 場所を起点に探すので、`src` にあるヘッダは 1 つ上になる。
-    let _ = writeln!(out, "    #include \"../{PLATFORM_FIXUPS_HEADER}\"\n");
+        finished
+    };
 
-    for dir in &manifest.include_dirs {
-        let _ = writeln!(out, "    #pragma cinrs include_path \"{dir}\"");
+    let finished = thread::scope(|scope| -> Result<Vec<_>> {
+        let workers = (0..worker_count)
+            .map(|_| {
+                thread::Builder::new()
+                    .stack_size(WORKER_STACK_SIZE)
+                    .spawn_scoped(scope, work)
+            })
+            .collect::<std::io::Result<Vec<_>>>()?;
+
+        let mut finished = Vec::new();
+
+        for worker in workers {
+            finished.extend(
+                worker
+                    .join()
+                    .map_err(|_| "変換のスレッドが異常終了しました")?,
+            );
+        }
+
+        Ok(finished)
+    })?;
+
+    let mut translated = BTreeMap::new();
+    let mut failures = BTreeMap::new();
+
+    for (unit, result) in finished {
+        match result {
+            Ok(output) => {
+                translated.insert(unit, output);
+            }
+            Err(error) => {
+                failures.insert(unit, error);
+            }
+        }
     }
 
-    out.push('\n');
+    if !failures.is_empty() {
+        let mut message = format!("{} 個の翻訳単位を変換できません。", failures.len());
 
-    for define in &manifest.defines {
-        // コンパイラは、値を省いた `-DNAME` を `NAME` を 1 とする定義として扱う。
-        let (name, value) = define.split_once('=').unwrap_or((define, "1"));
-        let _ = writeln!(out, "    #define {name} {value}");
+        for (unit, error) in &failures {
+            let _ = write!(message, "\n\n{}:\n{error}", unit.source_path());
+        }
+
+        return Err(message.into());
     }
 
-    let _ = writeln!(out, "\n    #include \"../{FFMPEG_FIXUPS_HEADER}\"\n");
-    let _ = writeln!(out, "    #include \"{source}\"");
-    out.push_str("}\n");
-
-    Ok(out)
+    Ok(units
+        .iter()
+        .map(|unit| translated.remove(&unit).expect("全翻訳単位の結果がある"))
+        .collect())
 }
 
-/// C の規格の名前から、cinrs のマクロの名前を決める。
+/// 同じ C のシンボルを、2 つ以上の翻訳単位が定義していないことを確かめる。
 ///
-/// cinrs のマクロは規格ごとに分かれていて、名前は `-std=` の値と同じ。対応する
-/// マクロが無い値は、黙って別の規格で変換せずにエラーにする。
-fn cinrs_macro(c_standard: &str) -> Result<&str> {
-    const MACROS: &[&str] = &[
-        "c89", "c99", "c11", "c17", "c23", "gnu89", "gnu99", "gnu11", "gnu17", "gnu23",
-    ];
+/// 翻訳単位は Rust のモジュールとしては別々なので、名前が重なっても rustc は
+/// エラーにしない。重複が分かるのは、最終的な実行ファイルのリンクのときで、
+/// `mini-ffmpeg-sys` のビルドだけでは気づけない。
+///
+/// C のビルドでは、静的ライブラリの中で同じシンボルが重複することは無い。
+/// 重複があれば、cinrs が本来シンボルにしない定義（インライン関数など）を
+/// シンボルとして出力している可能性が高い。
+fn check_duplicate_symbols(units: &[Unit], translated: &[Translated]) -> Result<()> {
+    let mut owners: BTreeMap<&str, &Unit> = BTreeMap::new();
 
-    if MACROS.contains(&c_standard) {
-        Ok(c_standard)
-    } else {
-        Err(format!("C の規格 {c_standard} に対応する cinrs のマクロがありません").into())
+    for (unit, output) in units.iter().zip(translated) {
+        for symbol in &output.symbols {
+            if let Some(first) = owners.insert(symbol, unit) {
+                return Err(format!(
+                    "シンボル {symbol} を、{} と {} の両方が定義しています。",
+                    first.source_path(),
+                    unit.source_path(),
+                )
+                .into());
+            }
+        }
     }
+
+    Ok(())
+}
+
+/// 翻訳単位 1 つ分のファイルを組み立てる。cinrs が出力したコードに、説明を付ける。
+fn render_unit(unit: &Unit, target: &str, rust: &str) -> String {
+    let source = unit.source_path();
+
+    format!(
+        "{GENERATED_MARKER} by `cargo xtask ffmpeg-units`. 手で編集しない。\n\
+         // 変換の指定を変えるときは、xtask の `ffmpeg_units` を変更して再生成する。\n\
+         \n\
+         //! FFmpeg の `{source}` を、cinrs で {target} 向けの Rust に変換したもの。\n\
+         //!\n\
+         //! 元のファイルの著作権とライセンスの表示は、FFmpeg のツリーの同じパスにある。\n\
+         \n\
+         {rust}"
+    )
 }
 
 /// ライブラリ 1 つ分の、モジュールの宣言のファイルを組み立てる。
-///
-/// 除外した翻訳単位も含めて、すべてのモジュールを宣言する。
 fn render_library(library: &str, units: &[&Unit]) -> String {
     let mut out = String::new();
 
@@ -297,149 +345,146 @@ fn render_library(library: &str, units: &[&Unit]) -> String {
     out
 }
 
-/// `src` にすでにあるファイルの種類。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Existing {
-    /// [`GENERATED_MARKER`] で始まる、このタスクが生成したファイル。
-    Generated,
+/// ターゲット 1 つ分の、ライブラリのモジュールの宣言のファイルを組み立てる。
+fn render_root<'a>(target: &str, libraries: impl Iterator<Item = &'a str>) -> String {
+    let mut out = String::new();
 
-    /// それ以外。手で書いたファイルとして扱う。
-    Handwritten,
+    let _ = writeln!(
+        out,
+        "{GENERATED_MARKER} by `cargo xtask ffmpeg-units`. 手で編集しない。\n\
+         \n\
+         //! {target} 向けに変換した FFmpeg のライブラリ。\n",
+    );
+
+    for library in libraries {
+        let _ = writeln!(out, "pub mod {library};");
+    }
+
+    out
 }
 
-/// `src` に書き出す内容と、手書きであるべきファイル。パスは `src` からの相対パス。
+/// 生成に使った cinrs のリビジョン情報。xtask の `Cargo.toml` にある依存の指定。
+#[derive(Debug, PartialEq, Eq)]
+struct CinrsSource {
+    git: String,
+    rev: String,
+}
+
+impl CinrsSource {
+    /// xtask の `Cargo.toml` から、`cinrs-core` の依存の指定を読む。
+    ///
+    /// Git のコミットで固定していない指定はエラーにする。ブランチやバージョンの
+    /// 範囲では、生成物を作った cinrs を後から特定できない。
+    fn parse(xtask_manifest: &str) -> Result<Self> {
+        let table: toml::Table = xtask_manifest
+            .parse()
+            .map_err(|error| format!("xtask の Cargo.toml を読めません: {error}"))?;
+
+        let dependency = table
+            .get("dependencies")
+            .and_then(|dependencies| dependencies.get("cinrs-core"));
+
+        let field = |key: &str| -> Result<String> {
+            dependency
+                .and_then(|dependency| dependency.get(key))
+                .and_then(toml::Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    format!(
+                        "xtask の Cargo.toml の cinrs-core に {key} がありません。\n\
+                         生成物を作った cinrs を記録するために、Git のコミットで固定してください。"
+                    )
+                    .into()
+                })
+        };
+
+        Ok(Self {
+            git: field("git")?,
+            rev: field("rev")?,
+        })
+    }
+}
+
+/// 生成に使った cinrs を記録するファイルを組み立てる。
+fn render_generator(target: &str, cinrs: &CinrsSource) -> String {
+    format!(
+        "# `cargo xtask ffmpeg-units` が生成したファイル。手で編集しない。\n\
+         #\n\
+         # このディレクトリの `{RUST_DIR}/` を、どの cinrs で生成したかの記録。\n\
+         # 生成物は cinrs のバージョンで変わる。xtask の `Cargo.toml` が指す cinrs と\n\
+         # ここの記録が違っていれば、生成物は古い cinrs で作られたもので、再生成が要る。\n\
+         \n\
+         target = \"{target}\"\n\
+         \n\
+         [cinrs]\n\
+         git = \"{}\"\n\
+         rev = \"{}\"\n",
+        cinrs.git, cinrs.rev,
+    )
+}
+
+/// `rust/` に書き出す内容。パスは `rust/` からの相対パス。
 #[derive(Debug, Default)]
 struct Layout {
-    /// 生成するファイルと、その内容。
-    generated: BTreeMap<PathBuf, String>,
-
-    /// 除外した翻訳単位の、手書きの取り込みが置かれるべき場所。
-    handwritten: BTreeSet<PathBuf>,
-
-    /// 翻訳単位のファイルを置くディレクトリ（ライブラリの名前）。
-    library_dirs: BTreeSet<PathBuf>,
+    files: BTreeMap<PathBuf, String>,
 }
 
 impl Layout {
-    fn build(manifest: &Manifest) -> Result<Self> {
-        let units = manifest
-            .translation_units
-            .iter()
-            .map(|path| Unit::parse(path))
-            .collect::<Result<BTreeSet<_>>>()?;
-
-        // 除外リストに、今の構成には無い翻訳単位が残っていないかを確かめる。
-        // FFmpeg の更新や構成の変更でファイルが無くなった場合に、役目を終えた
-        // 項目が残り続けるのを防ぐ。
-        for excluded in EXCLUDED_UNITS {
-            if !manifest
-                .translation_units
-                .iter()
-                .any(|unit| unit == excluded)
-            {
-                return Err(format!(
-                    "除外リストの {excluded} が、{MANIFEST_FILE} の翻訳単位にありません。\n\
-                     不要になった項目であれば、xtask の EXCLUDED_UNITS から削除してください。"
-                )
-                .into());
-            }
-        }
-
+    /// 変換の結果から、書き出すファイルを組み立てる。`rust` は `units` と同じ順の、
+    /// 翻訳単位ごとの変換後のコード。
+    fn build(target: &str, units: &[Unit], rust: &[&str]) -> Self {
         let mut layout = Self::default();
         let mut by_library: BTreeMap<&str, Vec<&Unit>> = BTreeMap::new();
 
-        for unit in &units {
+        for (unit, rust) in units.iter().zip(rust) {
             by_library.entry(&unit.library).or_default().push(unit);
 
-            if EXCLUDED_UNITS.contains(&unit.source_path().as_str()) {
-                layout.handwritten.insert(unit.module_file());
-            } else {
-                layout
-                    .generated
-                    .insert(unit.module_file(), render_unit(manifest, unit)?);
-            }
+            layout
+                .files
+                .insert(unit.module_file(), render_unit(unit, target, rust));
         }
 
-        for (library, units) in by_library {
-            layout.library_dirs.insert(PathBuf::from(library));
-            layout.generated.insert(
+        layout.files.insert(
+            PathBuf::from("mod.rs"),
+            render_root(target, by_library.keys().copied()),
+        );
+
+        for (library, mut units) in by_library {
+            // 宣言の並びを、一覧の並びではなく名前の順にする。フォーマッタの
+            // 並び順と同じで、一覧の側の順序が変わっても差分が出ない。
+            units.sort();
+
+            layout.files.insert(
                 PathBuf::from(format!("{library}.rs")),
                 render_library(library, &units),
             );
         }
 
-        Ok(layout)
+        layout
     }
 
     /// すでにあるファイルと突き合わせ、削除するファイルを決める。
     ///
-    /// 手書きのファイルを壊しかねない状況と、ビルドが通らなくなる状況は、
-    /// 何も書き出す前にエラーにする。
-    fn plan(&self, existing: &BTreeMap<PathBuf, Existing>) -> Result<Vec<PathBuf>> {
-        for path in self.generated.keys() {
-            if existing.get(path) == Some(&Existing::Handwritten) {
+    /// `existing` は、`rust/` にあるファイルと、[`GENERATED_MARKER`] の有無。
+    /// 印の無いファイルがあれば、何も書き出す前にエラーにする。
+    fn plan(&self, existing: &BTreeMap<PathBuf, bool>) -> Result<Vec<PathBuf>> {
+        let mut stale = Vec::new();
+
+        for (path, &is_generated) in existing {
+            if !is_generated {
                 return Err(format!(
-                    "src/{} は手書きのファイルなので、上書きしません。\n\
-                     生成物に置き換えるなら削除し、手書きのまま使うなら、対応する \
-                     翻訳単位を xtask の EXCLUDED_UNITS に追加してください。",
+                    "{RUST_DIR}/{} に、生成物の印がありません。\n\
+                     このディレクトリは cargo xtask ffmpeg-units が丸ごと管理します。\
+                     手で置いたファイルであれば、別の場所に移してください。",
                     path.display(),
                 )
                 .into());
             }
-        }
 
-        for path in &self.handwritten {
-            match existing.get(path) {
-                Some(Existing::Handwritten) => {}
-
-                Some(Existing::Generated) => {
-                    return Err(format!(
-                        "src/{} は除外リストにありますが、生成物の印が付いています。\n\
-                         手書きの取り込みに置き換えてください。",
-                        path.display(),
-                    )
-                    .into());
-                }
-
-                None => {
-                    return Err(format!(
-                        "src/{} がありません。\n\
-                         除外リストにある翻訳単位は、手書きの取り込みを置く必要があります。",
-                        path.display(),
-                    )
-                    .into());
-                }
-            }
-        }
-
-        let mut stale = Vec::new();
-
-        for (path, kind) in existing {
-            let expected = self.generated.contains_key(path) || self.handwritten.contains(path);
-
-            match kind {
-                // 一覧から消えた翻訳単位の生成物。残すと、宣言されないファイルが
-                // 溜まっていく。
-                Existing::Generated if !expected => stale.push(path.clone()),
-
-                // ライブラリのディレクトリにある、宣言されない手書きのファイル。
-                // モジュールの宣言は生成物の側にあるので、ここに置いても
-                // コンパイルされない。置き忘れや、除外リストへの追加漏れを疑う。
-                Existing::Handwritten
-                    if !expected
-                        && path
-                            .parent()
-                            .is_some_and(|dir| self.library_dirs.contains(dir)) =>
-                {
-                    return Err(format!(
-                        "src/{} は、どの翻訳単位にも対応しない手書きのファイルです。\n\
-                         除外リストへの追加漏れでなければ、別の場所に移してください。",
-                        path.display(),
-                    )
-                    .into());
-                }
-
-                _ => {}
+            // 一覧から消えた翻訳単位の生成物。残すと、宣言されないファイルが
+            // 溜まっていく。
+            if !self.files.contains_key(path) {
+                stale.push(path.clone());
             }
         }
 
@@ -449,107 +494,195 @@ impl Layout {
 
 pub fn run() -> Result<()> {
     let sys_crate = sys_crate_dir()?;
-    let src = sys_crate.join("src");
 
-    let manifest_path = sys_crate.join(MANIFEST_FILE);
-    let manifest_text = fs::read_to_string(&manifest_path).map_err(|error| {
+    // 以降のパスは、すべて `mini-ffmpeg-sys` からの相対パスで扱う。cinrs は、
+    // 渡されたパスをそのまま `__FILE__` の文字列にする。FFmpeg は `av_assert0`
+    // などで `__FILE__` を使うので、絶対パスで渡すと、生成したマシンのパスが
+    // 生成物に入り、マシンごとに内容が変わってしまう。
+    env::set_current_dir(&sys_crate)
+        .map_err(|error| format!("{} に移動できません: {error}", sys_crate.display()))?;
+
+    let manifest_text = fs::read_to_string(MANIFEST_FILE).map_err(|error| {
         format!(
-            "{} を読めません: {error}\n先に cargo xtask ffmpeg-manifest を実行してください。",
-            manifest_path.display(),
+            "{MANIFEST_FILE} を読めません: {error}\n\
+             先に cargo xtask ffmpeg-manifest を実行してください。",
         )
     })?;
 
     let manifest = Manifest::parse(&manifest_text)?;
-    let layout = Layout::build(&manifest)?;
 
-    check_library_declarations(&src, &layout)?;
+    // 翻訳単位を名前の順に並べ、重複を除く。
+    // `translate_units` は、翻訳単位が重複していないことを前提にしている。
+    // 順序を揃えるのは、警告やエラーの表示の順を、一覧の側の順序に左右されない
+    // ようにするため。生成物の内容は、`Layout` の側で順序に依存しない。
+    let units: Vec<Unit> = manifest
+        .translation_units
+        .iter()
+        .map(|path| Unit::parse(path))
+        .collect::<Result<BTreeSet<_>>>()?
+        .into_iter()
+        .collect();
+
+    require_ffmpeg_tree()?;
+
+    // 変換はこのマシンのプラットフォームのヘッダを読むので、生成物はこのマシンの
+    // ターゲット向けになる。
+    let target = HOST_TARGET;
+    let target_dir = Path::new(TARGETS_DIR).join(target);
+    let rust_dir = target_dir.join(RUST_DIR);
+
+    let cinrs = CinrsSource::parse(XTASK_MANIFEST)?;
+
+    check_root_declaration(target)?;
+
+    let settings = Settings {
+        c_standard: manifest.c_standard,
+        target: target.to_owned(),
+        defines: manifest.defines,
+        include_dirs: manifest.include_dirs.iter().map(PathBuf::from).collect(),
+    };
+
+    let translated = translate_units(&settings, &units)?;
+
+    check_duplicate_symbols(&units, &translated)?;
+
+    for (unit, output) in units.iter().zip(&translated) {
+        for warning in &output.warnings {
+            eprintln!("warning: {}: {warning}", unit.source_path());
+        }
+    }
+
+    let rust: Vec<&str> = translated
+        .iter()
+        .map(|output| output.rust.as_str())
+        .collect();
+    let layout = Layout::build(target, &units, &rust);
 
     let mut existing = BTreeMap::new();
-    scan_rust_files(&src, &src, &mut existing)?;
+
+    if rust_dir.is_dir() {
+        scan_files(&rust_dir, &rust_dir, &mut existing)?;
+    }
 
     let stale = layout.plan(&existing)?;
 
     let mut written = 0;
 
-    for (path, content) in &layout.generated {
-        let destination = src.join(path);
-
-        // 内容が変わらないファイルには触れない。書き直すと更新時刻が変わり、
-        // 何も変わっていないのに再ビルドが走る。
-        if fs::read_to_string(&destination).is_ok_and(|current| current == *content) {
-            continue;
+    for (path, content) in &layout.files {
+        if write_if_changed(&rust_dir.join(path), content)? {
+            written += 1;
         }
-
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        fs::write(&destination, content)?;
-        written += 1;
     }
 
     for path in &stale {
-        fs::remove_file(src.join(path))?;
+        fs::remove_file(rust_dir.join(path))?;
     }
+
+    write_if_changed(
+        &target_dir.join(GENERATOR_FILE),
+        &render_generator(target, &cinrs),
+    )?;
+
+    let symbol_count: usize = translated.iter().map(|output| output.symbols.len()).sum();
+    let line_count: usize = rust.iter().map(|rust| rust.lines().count()).sum();
 
     println!(
         "{} に生成しました。\n  \
-         生成物 {} 個（うち更新 {} 個）、手書き {} 個、削除 {} 個",
-        src.display(),
-        layout.generated.len(),
-        written,
-        layout.handwritten.len(),
+         翻訳単位 {} 個（シンボル {symbol_count} 個、Rust のコード {line_count} 行）\n  \
+         ファイル {} 個（うち更新 {written} 個）、削除 {} 個",
+        sys_crate.join(&target_dir).display(),
+        units.len(),
+        layout.files.len(),
         stale.len(),
     );
 
     Ok(())
 }
 
-/// クレートのルートのファイル（`lib.rs`）が、各ライブラリのモジュールを宣言して
-/// いることを確かめる。
+/// FFmpeg のツリーがあることを確かめる。
 ///
-/// `lib.rs` はクレートの説明を書く手書きのファイルなので、生成はしない。構成を
-/// 変えてライブラリが増えたときに宣言を足し忘れると、生成したコードがまるごと
-/// コンパイルされないまま、ビルドだけが通ってしまう。
-fn check_library_declarations(src: &Path, layout: &Layout) -> Result<()> {
-    let lib_rs = src.join("lib.rs");
-    let content = fs::read_to_string(&lib_rs)
-        .map_err(|error| format!("{} を読めません: {error}", lib_rs.display()))?;
+/// ツリーは Git のサブモジュールなので、`--recurse-submodules` を付けずに
+/// クローンした直後は空のディレクトリになっている。そのまま変換すると、cinrs が
+/// 「ファイルが見つからない」というエラーを翻訳単位の数だけ出し、原因が
+/// 分かりにくい。先にここで止めて、何をすれば良いかを伝える。
+fn require_ffmpeg_tree() -> Result<()> {
+    // どのファイルでも良いが、libavutil の中心のヘッダで代表させている。
+    let marker = Path::new(FFMPEG_DIR).join("libavutil/avutil.h");
 
-    for library in &layout.library_dirs {
-        let declaration = format!("pub mod {};", library.display());
-
-        if !content.lines().any(|line| line.trim() == declaration) {
-            return Err(format!(
-                "{} に `{declaration}` がありません。追加してください。",
-                lib_rs.display(),
-            )
-            .into());
-        }
+    if marker.is_file() {
+        Ok(())
+    } else {
+        Err(format!(
+            "FFmpeg のツリーがありません（{} が見つかりません）。\n\
+             サブモジュールを取得してください: git submodule update --init",
+            marker.display(),
+        )
+        .into())
     }
-
-    Ok(())
 }
 
-/// `dir` 以下の `.rs` を集め、生成物か手書きかを調べる。パスは `root` からの相対パス。
-fn scan_rust_files(root: &Path, dir: &Path, files: &mut BTreeMap<PathBuf, Existing>) -> Result<()> {
+/// クレートのルートのファイル（`src/lib.rs`）が、このターゲットの生成物を読んで
+/// いることを確かめる。
+///
+/// `lib.rs` は、ターゲットごとの生成物を条件付きで選ぶ手書きのファイルなので、
+/// 生成はしない。新しいターゲットの生成物を足したときに宣言を足し忘れると、
+/// 生成したコードがどこからも読まれないまま残る。変換には時間が掛かるので、
+/// 変換の前に確かめる。
+fn check_root_declaration(target: &str) -> Result<()> {
+    let lib_rs = Path::new("src/lib.rs");
+    let content = fs::read_to_string(lib_rs)
+        .map_err(|error| format!("{} を読めません: {error}", lib_rs.display()))?;
+
+    let declaration = format!("#[path = \"../{TARGETS_DIR}/{target}/{RUST_DIR}/mod.rs\"]");
+
+    if content.lines().any(|line| line.trim() == declaration) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} に `{declaration}` がありません。\n\
+             このターゲットの生成物を読むモジュールの宣言を、追加してください。",
+            lib_rs.display(),
+        )
+        .into())
+    }
+}
+
+/// `content` を `path` に書き出す。書き出したかどうかを返す。
+///
+/// 内容が変わらないファイルには触れない。書き直すと更新時刻が変わり、何も
+/// 変わっていないのに再ビルドが走る。
+fn write_if_changed(path: &Path, content: &str) -> Result<bool> {
+    if fs::read_to_string(path).is_ok_and(|current| current == content) {
+        return Ok(false);
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    fs::write(path, content)?;
+
+    Ok(true)
+}
+
+/// `dir` 以下のファイルを集め、[`GENERATED_MARKER`] で始まるかどうかを調べる。
+/// パスは `root` からの相対パス。
+fn scan_files(root: &Path, dir: &Path, files: &mut BTreeMap<PathBuf, bool>) -> Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        let file_type = entry.file_type()?;
 
-        if file_type.is_dir() {
-            scan_rust_files(root, &path, files)?;
-        } else if file_type.is_file() && path.extension().is_some_and(|ext| ext == "rs") {
-            let kind = if fs::read_to_string(&path)?.starts_with(GENERATED_MARKER) {
-                Existing::Generated
-            } else {
-                Existing::Handwritten
-            };
-
-            let relative = path.strip_prefix(root).expect("root 以下を走査している");
-            files.insert(relative.to_owned(), kind);
+        if entry.file_type()?.is_dir() {
+            scan_files(root, &path, files)?;
+            continue;
         }
+
+        // 生成物は UTF-8 のテキストだけ。読めないファイルは、生成物ではない。
+        let is_generated =
+            fs::read_to_string(&path).is_ok_and(|content| content.starts_with(GENERATED_MARKER));
+
+        let relative = path.strip_prefix(root).expect("root 以下を走査している");
+        files.insert(relative.to_owned(), is_generated);
     }
 
     Ok(())
@@ -559,19 +692,26 @@ fn scan_rust_files(root: &Path, dir: &Path, files: &mut BTreeMap<PathBuf, Existi
 mod tests {
     use super::*;
 
-    fn manifest(units: &[&str]) -> Manifest {
-        Manifest {
-            c_standard: "c17".to_owned(),
-            defines: vec!["PIC".to_owned(), "_FILE_OFFSET_BITS=64".to_owned()],
-            include_dirs: vec!["FFmpeg_generated".to_owned(), "FFmpeg".to_owned()],
-            translation_units: units.iter().map(|unit| (*unit).to_owned()).collect(),
-        }
+    const TARGET: &str = "aarch64-apple-darwin";
+
+    fn units(paths: &[&str]) -> Vec<Unit> {
+        paths
+            .iter()
+            .map(|path| Unit::parse(path).unwrap())
+            .collect()
     }
 
-    fn existing(files: &[(&str, Existing)]) -> BTreeMap<PathBuf, Existing> {
+    fn layout(paths: &[&str]) -> Layout {
+        let units = units(paths);
+        let rust = vec!["mod unit {}\n"; units.len()];
+
+        Layout::build(TARGET, &units, &rust)
+    }
+
+    fn existing(files: &[(&str, bool)]) -> BTreeMap<PathBuf, bool> {
         files
             .iter()
-            .map(|(path, kind)| (PathBuf::from(path), *kind))
+            .map(|(path, is_generated)| (PathBuf::from(path), *is_generated))
             .collect()
     }
 
@@ -602,119 +742,76 @@ mod tests {
         }
     }
 
-    /// 生成される取り込みの全体。並べる順に意味がある（プラットフォーム用の
-    /// 回避策はインクルードディレクトリの前、FFmpeg 用の回避策はマクロ定義の後）
-    /// ので、順番ごと固定している。
+    /// 生成されるファイルの全体。1 行目が印で始まることと、cinrs が出力した
+    /// コードに手を加えずに後ろへ続けることを固定している。
     #[test]
     fn renders_unit() {
         let rendered = render_unit(
-            &manifest(&["libavutil/time.c"]),
             &Unit::parse("libavutil/time.c").unwrap(),
-        )
-        .unwrap();
+            TARGET,
+            "mod unit {}\n",
+        );
 
         let expected = "\
 // @generated by `cargo xtask ffmpeg-units`. 手で編集しない。
-// 取り込みの形を変えるときは、xtask の `ffmpeg_units.rs` を変更して再生成する。
+// 変換の指定を変えるときは、xtask の `ffmpeg_units` を変更して再生成する。
 
-//! `libavutil/time.c` の取り込み。
+//! FFmpeg の `libavutil/time.c` を、cinrs で aarch64-apple-darwin 向けの Rust に変換したもの。
+//!
+//! 元のファイルの著作権とライセンスの表示は、FFmpeg のツリーの同じパスにある。
 
-cinrs::c17! {
-    #pragma cinrs export
-    #pragma cinrs system_include first
-
-    #include \"../cinrs_platform_fixups.h\"
-
-    #pragma cinrs include_path \"FFmpeg_generated\"
-    #pragma cinrs include_path \"FFmpeg\"
-
-    #define PIC 1
-    #define _FILE_OFFSET_BITS 64
-
-    #include \"../cinrs_ffmpeg_fixups.h\"
-
-    #include \"libavutil/time.c\"
-}
+mod unit {}
 ";
 
         assert_eq!(rendered, expected);
+        assert!(rendered.starts_with(GENERATED_MARKER));
     }
 
-    /// 対応するマクロが無い規格で、別の規格のマクロを使って変換しないこと。
+    /// 翻訳単位、ライブラリごとの宣言、ターゲットのルートの宣言が揃うこと。
+    /// 宣言が欠けると、生成したファイルがコンパイルされないまま残る。
     #[test]
-    fn rejects_c_standard_without_cinrs_macro() {
-        let mut manifest = manifest(&["libavutil/time.c"]);
-        manifest.c_standard = "c2y".to_owned();
+    fn declares_every_unit_and_library() {
+        let layout = layout(&["libavutil/time.c", "libavformat/mux.c", "libavutil/log.c"]);
 
-        assert!(render_unit(&manifest, &Unit::parse("libavutil/time.c").unwrap()).is_err());
-    }
-
-    /// 除外した翻訳単位は、取り込みのファイルを生成しないが、モジュールの宣言には
-    /// 含める。宣言が無いと、手書きのファイルがコンパイルされない。
-    #[test]
-    fn declares_excluded_unit_without_generating_it() {
-        let layout = Layout::build(&manifest(&["libavutil/log.c", "libavutil/time.c"])).unwrap();
-
-        assert!(!layout.generated.contains_key(Path::new("libavutil/log.rs")));
-        assert!(layout.handwritten.contains(Path::new("libavutil/log.rs")));
-        assert!(
-            layout
-                .generated
-                .contains_key(Path::new("libavutil/time.rs"))
+        assert_eq!(
+            layout.files.keys().collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                &PathBuf::from("libavformat.rs"),
+                &PathBuf::from("libavformat/mux.rs"),
+                &PathBuf::from("libavutil.rs"),
+                &PathBuf::from("libavutil/log.rs"),
+                &PathBuf::from("libavutil/time.rs"),
+                &PathBuf::from("mod.rs"),
+            ]),
         );
 
-        let library = &layout.generated[Path::new("libavutil.rs")];
-        assert!(library.contains("pub mod log;\n"));
-        assert!(library.contains("pub mod time;\n"));
+        let root = &layout.files[Path::new("mod.rs")];
+        assert!(root.ends_with("pub mod libavformat;\npub mod libavutil;\n"));
+
+        let library = &layout.files[Path::new("libavutil.rs")];
+        assert!(library.ends_with("pub mod log;\npub mod time;\n"));
+
+        assert!(
+            layout
+                .files
+                .values()
+                .all(|content| content.starts_with(GENERATED_MARKER))
+        );
     }
 
-    /// 除外リストの翻訳単位が一覧から消えたら、エラーにして気づかせる。
-    /// 上流の修正を含むバージョンに上げた後などに、不要な項目を残さないため。
-    #[test]
-    fn rejects_excluded_unit_missing_from_manifest() {
-        assert!(Layout::build(&manifest(&["libavutil/time.c"])).is_err());
-    }
-
-    /// 手書きのファイルは、どんな場合も上書きしない。生成を足す前に手で書いた
-    /// 取り込みが残っている状態で実行しても、黙って消さないこと。
-    #[test]
-    fn refuses_to_overwrite_handwritten_file() {
-        let layout = Layout::build(&manifest(&["libavutil/log.c", "libavutil/time.c"])).unwrap();
-
-        let existing = existing(&[
-            ("libavutil/log.rs", Existing::Handwritten),
-            ("libavutil/time.rs", Existing::Handwritten),
-        ]);
-
-        assert!(layout.plan(&existing).is_err());
-    }
-
-    /// 除外した翻訳単位の手書きの取り込みが無いと、モジュールの宣言だけが
-    /// 生成されてビルドが壊れる。何か書き出す前に止めること。
-    #[test]
-    fn requires_handwritten_file_for_excluded_unit() {
-        let layout = Layout::build(&manifest(&["libavutil/log.c", "libavutil/time.c"])).unwrap();
-
-        assert!(layout.plan(&existing(&[])).is_err());
-
-        let marked = existing(&[("libavutil/log.rs", Existing::Generated)]);
-        assert!(layout.plan(&marked).is_err());
-    }
-
-    /// 一覧から消えた翻訳単位の生成物は削除する。手書きのファイルと、ライブラリの
-    /// ディレクトリの外にあるファイル（`lib.rs` など）には触れないこと。
+    /// 一覧から消えた翻訳単位やライブラリの生成物は削除する。今も生成される
+    /// ファイルは、削除の対象にしないこと。
     #[test]
     fn removes_only_stale_generated_files() {
-        let layout = Layout::build(&manifest(&["libavutil/log.c", "libavutil/time.c"])).unwrap();
+        let layout = layout(&["libavutil/time.c"]);
 
         let existing = existing(&[
-            ("lib.rs", Existing::Handwritten),
-            ("libavutil.rs", Existing::Generated),
-            ("libavutil/log.rs", Existing::Handwritten),
-            ("libavutil/time.rs", Existing::Generated),
-            ("libavutil/removed.rs", Existing::Generated),
-            ("libswscale.rs", Existing::Generated),
-            ("libswscale/swscale.rs", Existing::Generated),
+            ("mod.rs", true),
+            ("libavutil.rs", true),
+            ("libavutil/time.rs", true),
+            ("libavutil/removed.rs", true),
+            ("libswscale.rs", true),
+            ("libswscale/swscale.rs", true),
         ]);
 
         let stale: BTreeSet<PathBuf> = layout.plan(&existing).unwrap().into_iter().collect();
@@ -729,19 +826,39 @@ cinrs::c17! {
         );
     }
 
-    /// ライブラリのディレクトリに、どの翻訳単位にも対応しない手書きのファイルが
-    /// あれば止める。モジュールの宣言は生成物の側にあるので、そのファイルは
-    /// コンパイルされない。除外リストへの追加漏れに気づくための検査。
+    /// 印の無いファイルは、生成物と同じ名前でも、宣言されない名前でも、上書きも
+    /// 削除もせずに止まる。手で置いたファイルを黙って消さないため。
     #[test]
-    fn rejects_orphan_handwritten_file_in_library_dir() {
-        let layout = Layout::build(&manifest(&["libavutil/log.c", "libavutil/time.c"])).unwrap();
+    fn refuses_to_touch_unmarked_files() {
+        let layout = layout(&["libavutil/time.c"]);
 
-        let existing = existing(&[
-            ("libavutil/log.rs", Existing::Handwritten),
-            ("libavutil/helper.rs", Existing::Handwritten),
-        ]);
+        for path in ["libavutil/time.rs", "libavutil/helper.rs", "notes.txt"] {
+            assert!(layout.plan(&existing(&[(path, false)])).is_err(), "{path}");
+        }
+    }
 
-        assert!(layout.plan(&existing).is_err());
+    /// 2 つの翻訳単位が同じシンボルを定義していたら、止める。rustc は別々の
+    /// モジュールにある同じ名前のシンボルをエラーにしないので、ここで見逃すと、
+    /// 利用する側の最終的なリンクまで気づけない。
+    #[test]
+    fn rejects_symbol_defined_by_two_units() {
+        let units = units(&["libavutil/log.c", "libavutil/time.c"]);
+
+        let translated = |symbols: &[&str]| Translated {
+            rust: String::new(),
+            symbols: symbols.iter().map(|symbol| (*symbol).to_owned()).collect(),
+            warnings: Vec::new(),
+        };
+
+        let distinct = [translated(&["av_log"]), translated(&["av_gettime"])];
+        assert!(check_duplicate_symbols(&units, &distinct).is_ok());
+
+        let duplicated = [
+            translated(&["av_log", "helper"]),
+            translated(&["av_gettime", "helper"]),
+        ];
+        let error = check_duplicate_symbols(&units, &duplicated).unwrap_err();
+        assert!(error.to_string().contains("helper"), "{error}");
     }
 
     /// 実際に書き出される形の一覧を読めること。書き出す側（`ffmpeg-manifest`）と
@@ -775,5 +892,44 @@ headers = []
         assert_eq!(manifest.defines, ["PIC"]);
         assert_eq!(manifest.include_dirs, ["FFmpeg_generated", "FFmpeg"]);
         assert_eq!(manifest.translation_units, ["libavutil/log.c"]);
+    }
+
+    /// xtask 自身の `Cargo.toml` から、cinrs のコミットを読めること。依存の
+    /// 書き方を変えて読めなくなった場合に、タスクを実行する前に気づける。
+    #[test]
+    fn reads_pinned_cinrs_commit_from_own_manifest() {
+        let cinrs = CinrsSource::parse(XTASK_MANIFEST).unwrap();
+
+        assert!(cinrs.git.starts_with("https://"), "{}", cinrs.git);
+        assert_eq!(cinrs.rev.len(), 40, "{}", cinrs.rev);
+        assert!(cinrs.rev.chars().all(|digit| digit.is_ascii_hexdigit()));
+    }
+
+    /// コミットで固定していない依存は、生成物を作った cinrs を特定できないので
+    /// 受け付けない。
+    #[test]
+    fn rejects_cinrs_dependency_without_pinned_commit() {
+        for dependency in [
+            r#"cinrs-core = "0.2.0""#,
+            r#"cinrs-core = { git = "https://example.invalid/cinrs", branch = "master" }"#,
+        ] {
+            let manifest = format!("[dependencies]\n{dependency}\n");
+
+            assert!(CinrsSource::parse(&manifest).is_err(), "{dependency}");
+        }
+    }
+
+    #[test]
+    fn renders_generator_record() {
+        let cinrs = CinrsSource {
+            git: "https://example.invalid/cinrs".to_owned(),
+            rev: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+        };
+
+        let table: toml::Table = render_generator(TARGET, &cinrs).parse().unwrap();
+
+        assert_eq!(table["target"].as_str(), Some(TARGET));
+        assert_eq!(table["cinrs"]["git"].as_str(), Some(cinrs.git.as_str()));
+        assert_eq!(table["cinrs"]["rev"].as_str(), Some(cinrs.rev.as_str()));
     }
 }

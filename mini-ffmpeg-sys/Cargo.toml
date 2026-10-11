@@ -4,10 +4,28 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 readme = "README.md"
-# FFmpeg のソースと生成物、ライセンスをクレートの配布にも含める。
-include = ["Cargo.toml", "build.rs", "src/**", "tests/**", "cinrs_manifest.toml", "FFmpeg/**", "FFmpeg_generated/**", "LICENSE.ffmpeg", "README.md"]
+# 配布に含めるのは、変換後の Rust のコードと、その記録。FFmpeg のソースと
+# `FFmpeg_generated/` は変換の入力で、ビルドには使わないので含めていない。
+# `cinrs_manifest.toml` は、テストが FFmpeg のバージョンを読むために要る。
+#
+# 変換後のコードを配布するときのライセンスの扱いは、まだ決まっていない。
+# この指定は、決まるまでの仮のもの（`publish = false` のままにしている）。
+#
+# 先頭の `/` は、クレートのルートからのパスに限る指定。付けないと、サブモジュールの
+# 中の同じ名前のファイル（`FFmpeg/README.md` など）にも一致する。
+include = [
+    "/Cargo.toml",
+    "/README.md",
+    "/LICENSE.ffmpeg",
+    "/cinrs_manifest.toml",
+    "/src/**/*.rs",
+    "/tests/**/*.rs",
+    "/targets/*/generator.toml",
+    "/targets/*/rust/**/*.rs",
+]
 
 publish = false # まだ開発が終わっておらず確認したい項目がまだ残っている。
 
+# 依存は無い。FFmpeg のコードは `cargo xtask ffmpeg-units` で変換済みのものを
+# 読むだけで、cinrs もビルドには使わない。
 [dependencies]
-cinrs = "=0.2.0"

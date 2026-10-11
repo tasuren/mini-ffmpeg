@@ -1,4 +1,4 @@
-//! `libavutil/version.c` を cinrs で取り込んだ結果を、Rust から呼んで確かめる。
+//! `libavutil/version.c` を cinrs で変換した結果を、Rust から呼んで確かめる。
 //!
 //! 結合テストにしているのは、リンクまで通ることを確かめるため。ライブラリの
 //! クレートは `cargo build` だけではリンクされず、未解決のシンボルがあっても
@@ -21,8 +21,8 @@ fn manifest_ffmpeg_version() -> &'static str {
 }
 
 /// `FFMPEG_VERSION` は `make` が生成した `libavutil/ffversion.h` にある。
-/// この値が返るなら、`FFmpeg_generated` をインクルードディレクトリとして
-/// 読めていて、C の関数を Rust から呼べている。
+/// この値が返るなら、変換のときに `FFmpeg_generated` をインクルード
+/// ディレクトリとして読めていて、C の関数を Rust から呼べている。
 #[test]
 fn av_version_info_returns_ffversion_h_value() {
     let version = unsafe { CStr::from_ptr(version::av_version_info()) };

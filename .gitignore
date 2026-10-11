@@ -1,3 +1,8 @@
 /target
 
 .DS_Store
+
+# `cargo xtask ffmpeg-units` が FFmpeg の C コードを変換した Rust のコード。
+# プラットフォームのヘッダ由来の内容も含まれ、再配布するときのライセンスの扱いが
+# 決まっていないので、リポジトリには入れていない。
+/mini-ffmpeg-sys/targets/
