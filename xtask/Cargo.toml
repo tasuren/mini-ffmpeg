@@ -6,25 +6,6 @@ license.workspace = true
 publish = false
 
 [dependencies]
-# C を Rust に変換する本体。cinrs のマクロ（`c17!` など）が内部で使っているもので、
-# `ffmpeg-units` がこれを直接呼んで、変換後の Rust のコードをファイルに書き出す。
-#
-# crates.io の 0.2.0 には、翻訳単位が使う項目だけを出力する指定
-# （`Options::reachable_only`）が無いので、Git のコミットを固定して使う。
-# 上流（tanakh/cinrs）の master に、Mach-O での `__asm` のラベルの修正を足した
-# fork のコミット。修正が上流に入ったら、上流のコミットに切り替える。
-#
-# ここの `rev` は、生成物を作った cinrs の記録として、`ffmpeg-units` が
-# `generator.toml` に書き出す。
-cinrs-core = { git = "https://github.com/tasuren/cinrs", rev = "bb33d7acff45656b16f3346cb53aa9235dc8d350" }
-
-# 変換後の Rust のコードの整形用。cinrs が返すのはトークンの並びで、そのまま
-# 文字列にすると翻訳単位が 1 行になる。差分を読めるようにするために整形する。
-# `ccinrs`（cinrs の C コンパイラ互換のコマンド）が出力の整形に使っているものと
-# 同じ組み合わせ。
-prettyplease = "0.3"
-syn = { version = "3", default-features = false, features = ["full", "parsing", "printing"] }
-
 # `cinrs_manifest.toml` の読み取り用。書き出しは文字列の組み立てで済ませているので、
 # 読み取りに要る機能だけを有効にしている。
 toml = { version = "1", default-features = false, features = ["parse", "serde", "std"] }

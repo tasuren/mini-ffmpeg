@@ -1,31 +1,35 @@
 # mini-ffmpeg-sys
 
 FFmpeg のライブラリ API を小規模のビルド構成で提供するクレート。
-FFmpeg の C コードを cinrs で Rust に変換したものを読み、Rust のみでビルドします。
+ビルド時に FFmpeg の C コードを cinrs で Rust に変換するので、C コンパイラ無しで
+ビルド可能。
 
-変換した Rust のコードは、現在リポジトリに含めていません。クローンした直後は、
-リポジトリのルートで次のコマンドを一度実行してください。FFmpeg のサブモジュールと
-プラットフォームのヘッダ（macOS では Command Line Tools）が必要です。
-
-```sh
-cargo xtask ffmpeg-units
-```
-
-変換が済んでいれば、このクレートのビルドに cinrs、FFmpeg のソース、プラットフォームの
-ヘッダは必要ありません。
+ビルドには、FFmpeg のサブモジュールと、プラットフォームのヘッダ（macOS では
+Command Line Tools）が必要です。現在対応しているターゲットは
+`aarch64-apple-darwin` のみで、クロスコンパイルには対応していません。
 
 特に関連するファイル:
 
-- `targets/<ターゲット>/rust`: ツールが FFmpeg の C コードを変換した Rust のコード（Git の管理外）
-- `targets/<ターゲット>/generator.toml`: 変換に使った cinrs の記録（Git の管理外）
+- `build.rs`、`build/`: FFmpeg の C コードを Rust に変換するビルドスクリプト
 - `cinrs_manifest.toml`: ツールにより生成された取り込み情報
 - `FFmpeg`: 上流 FFmpeg のサブモジュール
 - `FFmpeg_generated`: `make`/`configure` が生成したファイル群
 - `LICENSE.ffmpeg`: 使用している FFmpeg の構成におけるライセンス全文
 
-変換の結果はターゲットごとに異なるため、ターゲットごとのディレクトリに分けています。
-現在対応しているのは `aarch64-apple-darwin` のみです。
-詳細は後述の「生成物」を参照してください。
+## ビルドの流れ
+
+ビルドスクリプトが `cinrs_manifest.toml` にある FFmpeg の `.c` を一つずつ Rust に
+変換し、Cargo の出力用のディレクトリに書き出します。`src/lib.rs` がそれを
+読み込みます（`libavutil/time.c` は `libavutil::time` になります）。
+
+変換は、入力（FFmpeg のソース、`FFmpeg_generated/`、プラットフォームのヘッダ）が
+変わったときだけ行われます。Apple M3 Pro（11 コア）での目安は、変換に約 6 秒、
+変換後のコードのコンパイルに約 6 秒です。
+
+変換済みの Rust のコードは、リポジトリにもクレートの配布にも含めていません。
+変換後のコードには、その `.c` が読んだプラットフォームのヘッダの宣言や
+インライン関数も含まれるためです。FFmpeg のソースを無編集で配布し、ビルドする
+マシンで変換します。
 
 ## ライセンス
 
@@ -45,53 +49,39 @@ FFmpeg 全体には異なるライセンスのファイルも含まれるため�
 
 ### 生成物
 
-`targets/<ターゲット>/rust/` 配下の内容は、上記 FFmpeg の C コードを cinrs で機械的に
-Rust へ変換したものです。FFmpeg の `.c` 一つが `.rs` 一つに対応します
-（`libavutil/time.c` は `rust/libavutil/time.rs`）。変換に使った cinrs のリポジトリと
-コミットは、同じディレクトリの `generator.toml` に記録されます。
-
-変換した Rust のコードには、FFmpeg のコードのほかに、その `.c` が読んだ
-プラットフォームのヘッダの宣言、型、インライン関数も含まれます。これを再配布する
-場合のライセンスの扱いが決まっていないため、リポジトリにもクレートの配布にも
-含めていません（`.gitignore` で除外しています）。
-
 `FFmpeg_generated/` 配下の内容は、上記 FFmpeg の `configure` と `make` による
 生成物を、手を加えずにコピーしたものです。設定ヘッダー、バージョンヘッダー、
-有効な部品の登録配列を含みます。C コードを変換するときの入力で、クレートの
-配布には含めていません。
+有効な部品の登録配列を含みます。FFmpeg 由来の構成ファイルとして、
+本クレートの LGPL-2.1-or-later の配布に含めています。
 
 構成と生成環境は [cinrs_manifest.toml](cinrs_manifest.toml) に記録しています。
 現在の構成では GPL、nonfree、version3 オプションを有効にしていません。
 `config.h` のコンパイラ識別文字列は、生成時の環境を示す情報です。
 
-リポジトリのルートで次の順に実行すると、構成ファイル・取り込み対象の一覧と、
-変換した Rust ファイルを生成できます。どちらのコマンドにも FFmpeg の
-サブモジュールが必要です。最初のコマンドには C コンパイラと `make` が、二つ目の
-コマンドにはプラットフォームのヘッダが必要です。最初のコマンドの結果はコミット
-してあるので、FFmpeg のバージョンや構成を変えるときだけ実行します。
+リポジトリのルートで次のコマンドを実行すると、構成ファイルと取り込み対象の一覧を
+再生成できます。FFmpeg のサブモジュール、C コンパイラ、`make` が必要です。
+FFmpeg のバージョンや構成を変えるときだけ実行します。
 
 ```sh
 cargo xtask ffmpeg-manifest
-cargo xtask ffmpeg-units
 ```
 
-二つ目のコマンドは、実行したマシンのターゲット向けの Rust ファイルを生成します。
-
 生成処理と `configure` の引数は
-[xtask/src/ffmpeg_manifest.rs](../xtask/src/ffmpeg_manifest.rs) に、変換の指定は
-[xtask/src/ffmpeg_units](../xtask/src/ffmpeg_units) にあります。
-`FFmpeg_generated/` と `targets/<ターゲット>/rust/` は再生成時に置き換えられるため、
-説明や手書きのファイルはその外に置いています。
+[xtask/src/ffmpeg_manifest.rs](../xtask/src/ffmpeg_manifest.rs) にあります。
+`FFmpeg_generated/` は再生成時に置き換えられるため、説明や手書きのファイルは
+その外に置いています。
 
 ### クレートへの同梱
 
-このクレートは、まだ公開できる状態ではありません（`publish = false`）。
-変換した Rust のコードを配布に含めるか、FFmpeg の C のソースを含めて利用者の
-ビルドで変換するかを、ライセンスの扱いと合わせて検討しています。
+`Cargo.toml` の `include` で、`LICENSE.ffmpeg`、この README、FFmpeg のソース、
+生成物、ビルドスクリプトを配布対象に指定しています。
+配布対象はリポジトリのルートから次のコマンドで確認できます。
 
-また、FFmpeg には LGPL 以外のライセンスのファイルがあります。現在の構成では、
-libjpeg 由来の `libavcodec/jfdctfst.c`、`libavcodec/jfdctint_template.c`、
-`libavcodec/jrevdct.c`（IJG のライセンス）、`libavcodec/faandct.c`、
-`libavutil/avsscanf.c`、`libavutil/adler32.c` が該当します。配布の形を決めるときに、
-各ファイルの先頭の条件と、サブモジュール内の [LICENSE.md](FFmpeg/LICENSE.md) を
-確認する必要があります。
+```sh
+cargo package -p mini-ffmpeg-sys --list --allow-dirty
+```
+
+このクレートは、まだ公開できる状態ではありません（`publish = false`）。
+ビルドスクリプトが使う cinrs は、未公開のコミットを Git の依存として指定して
+います。crates.io は Git の依存を受け付けないので、必要な変更を含む cinrs が
+公開されるまで、このクレートも公開できません。

@@ -89,6 +89,11 @@ version = "0.1.0"
 [[package]]
 name = "mini-ffmpeg-sys"
 version = "0.1.0"
+dependencies = [
+ "cinrs-core 0.2.0 (git+https://github.com/tasuren/cinrs?rev=bb33d7acff45656b16f3346cb53aa9235dc8d350)",
+ "proc-macro2",
+ "toml",
+]
 
 [[package]]
 name = "num-complex"
@@ -106,16 +111,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
-]
-
-[[package]]
-name = "prettyplease"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bfe0f4c752e450fc2faf62654f1c134747922825d5b04ca717b8874f41a40c0"
-dependencies = [
- "proc-macro2",
- "syn",
 ]
 
 [[package]]
@@ -254,8 +249,5 @@ checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 name = "xtask"
 version = "0.0.0"
 dependencies = [
- "cinrs-core 0.2.0 (git+https://github.com/tasuren/cinrs?rev=bb33d7acff45656b16f3346cb53aa9235dc8d350)",
- "prettyplease",
- "syn",
  "toml",
 ]
