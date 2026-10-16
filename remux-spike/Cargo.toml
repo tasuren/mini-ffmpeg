@@ -6,5 +6,5 @@ license.workspace = true
 publish = false
 
 [dependencies]
-cinrs = "=0.2.0"
+cinrs = "=0.3.0"
 mini-ffmpeg-sys = { path = "../mini-ffmpeg-sys" }

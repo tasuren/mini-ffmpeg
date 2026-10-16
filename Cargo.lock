@@ -10,9 +10,9 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "cinrs"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55c4f5ca6e0e63da99a4699b6cc40a981efe984af98012aea435272d806b12f8"
+checksum = "9688642d9d9c2ed0993ed038d28aca2572abba4c6322206ca53f4a98dbebbc69"
 dependencies = [
  "cinrs-macros",
  "cinrs-rt",
@@ -20,9 +20,9 @@ dependencies = [
 
 [[package]]
 name = "cinrs-core"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f6791861f8ea937b29dd271e78bb520083adbd2e530e4d633ed02d3c884f03a"
+checksum = "0a2cd47ca8a76c3c4998bc691eccbe831e2a4366922620f9467f5d230b786c2c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -32,9 +32,9 @@ dependencies = [
 
 [[package]]
 name = "cinrs-macros"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ba7806cd8c2eb0c09ea3202bd3d0e77e16ce9e55b3b70b1e8c451d3117eeab5"
+checksum = "043f9b19608afaecae1884546af59a734041d883de21b8ae6ae72077502f736c"
 dependencies = [
  "cinrs-core",
  "proc-macro2",
@@ -42,9 +42,9 @@ dependencies = [
 
 [[package]]
 name = "cinrs-rt"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02d410ddf284be0681f0f45092d3d5ab34cb9c0c54423b71e0d593c0857af637"
+checksum = "0769acf651e7875182a2f79b8e38ecf7a3263f3f9f74d4d5531c99f52946f69f"
 dependencies = [
  "num-complex",
 ]
@@ -79,7 +79,9 @@ version = "0.1.0"
 name = "mini-ffmpeg-sys"
 version = "0.1.0"
 dependencies = [
- "cinrs",
+ "cinrs-core",
+ "proc-macro2",
+ "toml",
 ]
 
 [[package]]

@@ -20,7 +20,7 @@ use crate::Result;
 /// パスの解釈は行わない。
 ///
 /// 規則の形になっていない行があった場合はエラーにする。黙って読み飛ばすと、
-/// 取り込む対象の一覧から依存が欠けても気づけないため。
+/// ビルドマニフェストから依存が欠けても気づけないため。
 pub fn parse_dependencies(content: &str) -> Result<Vec<String>> {
     // 行末の `\` は行の継続。先に繋げてから、論理行ごとに規則として読む。
     let joined = content.replace("\\\r\n", " ").replace("\\\n", " ");

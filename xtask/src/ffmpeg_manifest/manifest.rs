@@ -1,4 +1,4 @@
-//! 取り込む対象の一覧（`cinrs_manifest.toml`）のデータと、その書き出し。
+//! ビルドマニフェスト（`cinrs_manifest.toml`）のデータと、その書き出し。
 
 use std::{fmt::Write as _, path::Path};
 
@@ -46,6 +46,13 @@ pub struct Manifest {
     /// ビルドディレクトリからの相対パスで、`FFmpeg_generated/` 以下に同じパスで
     /// コピーされる。
     pub generated: Vec<String>,
+
+    /// 翻訳単位が include したヘッダのうち、FFmpeg が公開の API としてインストール
+    /// するもの。`headers` と `generated` の一部で、`#include` に書く名前
+    /// （`libavutil/avutil.h` の形）で持つ。
+    ///
+    /// ライブラリを使う側に見せる宣言と型を、ここから取り込む。
+    pub public_headers: Vec<String>,
 }
 
 /// インクルードディレクトリが、どこを起点にしたパスかを表す。
@@ -195,6 +202,12 @@ impl Manifest {
         );
         write_array(&mut out, "generated", &self.generated);
 
+        out.push_str(
+            "\n# 上の `headers` と `generated` のうち、FFmpeg が公開の API としてインストール\n\
+             # するヘッダ。`#include` に書く名前で、インクルードディレクトリから見つかる。\n",
+        );
+        write_array(&mut out, "public_headers", &self.public_headers);
+
         out
     }
 }
@@ -277,7 +290,7 @@ mod tests {
     }
 
     /// `compat` 以下のディレクトリは絶対パスで渡される。生成したマシンのパスが
-    /// 一覧に残らないよう、ツリーからの相対パスに直すこと。
+    /// ビルドマニフェストに残らないよう、ツリーからの相対パスに直すこと。
     #[test]
     fn classifies_absolute_path_inside_ffmpeg_tree() {
         assert_eq!(
@@ -298,7 +311,7 @@ mod tests {
         assert!(IncludeDir::classify("/opt/homebrew/include", Path::new("/work/FFmpeg")).is_err());
     }
 
-    /// 一覧に書き出すパスは、取り込みのコードの `#pragma cinrs include_path` に
+    /// ビルドマニフェストに書き出すパスは、取り込みのコードの `#pragma cinrs include_path` に
     /// そのまま書く。起点そのもの（`.`）のときに `FFmpeg/.` のような余計な要素を
     /// 付けないこと。
     #[test]

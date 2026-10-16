@@ -1,33 +1,40 @@
-//! cinrs で Rust に取り込んだ FFmpeg の libav\* を置くクレート。
+//! cinrs で Rust に変換した FFmpeg の libav\* を置くクレート。
 //!
-//! FFmpeg の `.c` 1 つを 1 つの翻訳単位として、ライブラリ名のモジュールの下に
-//! 取り込む。`libavutil/time.c` は `libavutil::time` になる。
+//! FFmpeg の公開の API（関数の宣言、構造体、列挙子）を、クレートのルートに置いて
+//! いる。`mini_ffmpeg_sys::avformat_open_input` のように、C の名前のまま使う。
+//! 公開の API は、FFmpeg の公開ヘッダ（ビルドマニフェストの `public_headers`）を
+//! 変換したもので、関数は宣言だけを持つ。
 //!
-//! 翻訳単位のファイル（`libavutil/time.rs` など）と、ライブラリごとのモジュールの
-//! 宣言（`libavutil.rs` など）は、`cargo xtask ffmpeg-units` の生成物で、先頭に
-//! `// @generated` の印がある。取り込みの形の説明は、xtask の `ffmpeg_units.rs`
-//! にある。印が無いファイルは手書きで、次のものがある。
+//! 関数の実体は、FFmpeg の `.c` を 1 つずつ Rust に変換した、実装の翻訳単位が
+//! 持つ。ライブラリ名のモジュールの下にあり、`libavutil/time.c` は
+//! `libavutil::time` になる。利用者に見せるものではないので、ドキュメントからは
+//! 隠している（`#[doc(hidden)]`）。公開の API の宣言は、リンクのときに、C の
+//! シンボルの名前でこの実体に繋がる。
 //!
-//! - このファイル。
-//! - `libavutil/log.rs` と `libavutil/log.c`: cinrs でそのまま変換できない
-//!   翻訳単位の、手書きの取り込みと、変更を加えたソースのコピー。
-//! - `cinrs_platform_fixups.h` と `cinrs_ffmpeg_fixups.h`: 全翻訳単位が読む、
-//!   cinrs のための回避策。
+//! 変換は、このクレートのビルドスクリプト（`build.rs`）が行う。変換後のコードは
+//! Cargo の出力用のディレクトリに書き出され、このファイルの `include!` が読む。
+//! 変換の指定の説明は `build/translate.rs` に、ビルドスクリプトで変換する理由は
+//! `build.rs` にある。
 //!
-//! 翻訳単位どうしは、Rust のモジュールのパスではなく、C のシンボルの名前で
-//! 互いを参照する（`#pragma cinrs export`）。そのため、同じヘッダを読む翻訳
-//! 単位が複数あっても、構造体などの型は翻訳単位ごとに別々の Rust の型になる。
+//! 実装の翻訳単位どうしも、Rust のモジュールのパスではなく、C のシンボルの名前で
+//! 互いを参照する。そのため、同じヘッダを読む翻訳単位が複数あっても、構造体などの
+//! 型は翻訳単位ごとに別々の Rust の型になる。また、各モジュールにあるのは、その
+//! 翻訳単位が定義するものと、そこから使われるものだけになっている。公開の API は
+//! 1 つの翻訳単位なので、型は 1 つに揃い、公開ヘッダの宣言と型がすべてある。
 //!
-//! クレートのディレクトリには、Rust のコードのほかに次のものがある。
+//! 公開の API には、公開ヘッダが読むプラットフォームのヘッダの宣言（`strcat`
+//! など）も含まれる。
+//!
+//! クレートのディレクトリには、Rust のコードのほかに次のものがある。どれも
+//! 変換の入力で、ビルドスクリプトが読む。
 //!
 //! - `FFmpeg/`: FFmpeg のツリー。Git のサブモジュール。
 //! - `FFmpeg_generated/`: FFmpeg の `configure` と `make` が生成したファイル。
-//! - `cinrs_manifest.toml`: 取り込む対象の一覧。
+//! - `cinrs_manifest.toml`: ビルドマニフェスト。FFmpeg を一度ビルドして読み取った内容を記したもの。
 //!
 //! 後ろの 2 つは `cargo xtask ffmpeg-manifest` の生成物で、手では編集しない。
 
-// ライブラリを増減したときは、ここを手で合わせる。`cargo xtask ffmpeg-units` が、
-// 一覧にあるライブラリがすべて宣言されていることを確かめる。
-pub mod libavcodec;
-pub mod libavformat;
-pub mod libavutil;
+// ビルドスクリプトが書き出した、モジュールの宣言。公開の API のモジュールと、
+// その再エクスポート（`pub use public_api::*;`）に続けて、`pub mod libavutil { … }` の
+// 形で、ライブラリごとに実装の翻訳単位のモジュールを並べている。
+include!(concat!(env!("OUT_DIR"), "/generated.rs"));
