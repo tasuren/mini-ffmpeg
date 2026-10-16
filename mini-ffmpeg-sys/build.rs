@@ -3,7 +3,10 @@
 //! ビルドマニフェスト（`cinrs_manifest.toml`）の翻訳単位を 1 つずつ変換し、Cargo が用意する
 //! 出力用のディレクトリ（`OUT_DIR`）に書き出す。`src/lib.rs` が、それを読み込む。
 //!
-//! - `<ライブラリ>/<名前>.rs`: 翻訳単位 1 つを変換したもの。
+//! - `<ライブラリ>/<名前>.rs`: 翻訳単位 1 つを変換したもの。FFmpeg の関数と変数の
+//!   定義を持つ。
+//! - `public_api.rs`: 公開ヘッダ（ビルドマニフェストの `public_headers`）を
+//!   変換したもの。利用者に見せる関数の宣言、型、列挙子を持つ。
 //! - `generated.rs`: モジュールの宣言。`src/lib.rs` が `include!` で読む。
 //!
 //! # ビルドスクリプトで変換する理由
@@ -57,6 +60,43 @@ const FFMPEG_DIR: &str = "FFmpeg";
 ///
 /// `src/lib.rs` の `include!` と揃える。
 const ROOT_FILE: &str = "generated.rs";
+
+/// 公開ヘッダを変換したファイル。`OUT_DIR` からの相対パス。
+const PUBLIC_API_FILE: &str = "public_api.rs";
+
+/// 公開ヘッダを include するだけの翻訳単位の名前。診断と `__FILE__` に使われる。
+///
+/// ファイルとしては存在しない。C のコードは、ビルドスクリプトが組み立てて、
+/// 文字列のまま cinrs に渡す。
+const PUBLIC_API_SOURCE_NAME: &str = "public_api.c";
+
+/// FFmpeg の公開の関数と変数の名前が、共通して持つ先頭の文字列。
+///
+/// 公開 API の翻訳単位には、FFmpeg の宣言のほかに、公開ヘッダが読む
+/// プラットフォームのヘッダの宣言（`strcat` など）も入る。宣言と定義の突き合わせ
+/// （[`check_public_declarations`]）では、FFmpeg の宣言だけを見る必要がある。
+/// cinrs は宣言がどのヘッダから来たかを返さないので、名前で見分ける。
+///
+/// FFmpeg の公開の名前は、`av_`、`avio_`、`avcodec_`、`avformat_`、`avutil_` の
+/// ように、すべて `av` で始まる命名規則になっている。外れた場合の振る舞いは
+/// 次の通り。
+///
+/// - プラットフォームに `av` で始まる関数があると、定義が無いと誤って報告されて
+///   止まる。[`UNDEFINED_PUBLIC_DECLARATIONS`] に足すかを判断する。
+/// - `av` で始まらない FFmpeg の公開の名前があると、検査されない。
+const FFMPEG_PUBLIC_PREFIX: &str = "av";
+
+/// 公開ヘッダが宣言しているが、この構成では定義されない名前。
+///
+/// 呼ばなければ問題は無いが、呼ぶとリンクで失敗する。宣言が見えていても使えない
+/// ことを、ここに理由とともに残す。
+const UNDEFINED_PUBLIC_DECLARATIONS: &[&str] = &[
+    // `libavcodec/jni.h` が無条件に宣言している、Android 専用の関数。定義は
+    // `libavcodec/jni.c` の `#if defined(__ANDROID__)` の中にある。ヘッダの説明にも
+    // 「Android でのみ使える」とある。
+    "av_jni_get_android_app_ctx",
+    "av_jni_set_android_app_ctx",
+];
 
 /// 変換を行うスレッドのスタックの大きさ。
 ///
@@ -124,9 +164,26 @@ fn run() -> Result<()> {
         include_dirs: manifest.include_dirs.iter().map(PathBuf::from).collect(),
     };
 
-    let translated = translate_units(&settings, &units)?;
+    // 公開 API の翻訳単位は 1 つで、絞り込みをしないので、実装の翻訳単位の
+    // 1 つより時間が掛かる。実装の翻訳単位の変換と並べて進める。
+    let (translated, public_api) = thread::scope(|scope| {
+        let public_api = thread::Builder::new()
+            .stack_size(WORKER_STACK_SIZE)
+            .spawn_scoped(scope, || {
+                translate_public_api(&settings, &manifest.public_headers)
+            })
+            .map_err(|error| format!("変換のスレッドを起動できません: {error}"))?;
+
+        let translated = translate_units(&settings, &units);
+        let public_api = public_api
+            .join()
+            .map_err(|_| "変換のスレッドが異常終了しました".to_owned())?;
+
+        Ok::<_, String>((translated?, public_api?))
+    })?;
 
     check_duplicate_symbols(&units, &translated)?;
+    check_public_declarations(&public_api, &translated)?;
 
     let out_dir = PathBuf::from(cargo_env("OUT_DIR")?);
 
@@ -144,6 +201,16 @@ fn run() -> Result<()> {
         }
     }
 
+    write_file(
+        &out_dir.join(PUBLIC_API_FILE),
+        &render_public_api(&public_api.rust),
+    )?;
+
+    for warning in &public_api.warnings {
+        let warning = warning.replace('\n', " ");
+        println!("cargo::warning=公開ヘッダ: {warning}");
+    }
+
     write_file(&out_dir.join(ROOT_FILE), &render_root(&out_dir, &units)?)?;
 
     // 変換の入力が変わったら、変換し直す。翻訳単位の `.c` と、それが読んだ
@@ -155,6 +222,8 @@ fn run() -> Result<()> {
         inputs.insert(unit.source_file().display().to_string());
         inputs.extend(output.headers.iter().cloned());
     }
+
+    inputs.extend(public_api.headers.iter().cloned());
 
     for input in inputs {
         println!("cargo:rerun-if-changed={input}");
@@ -188,6 +257,9 @@ struct Manifest {
 
     /// 翻訳単位。FFmpeg のツリーからの相対パス。
     translation_units: Vec<String>,
+
+    /// 公開ヘッダ。`#include` に書く名前（`libavutil/avutil.h` の形）。
+    public_headers: Vec<String>,
 }
 
 impl Manifest {
@@ -203,6 +275,7 @@ impl Manifest {
             defines: string_array(&table, "compile", "defines")?,
             include_dirs: string_array(&table, "compile", "include_dirs")?,
             translation_units: string_array(&table, "sources", "translation_units")?,
+            public_headers: string_array(&table, "sources", "public_headers")?,
         })
     }
 }
@@ -451,6 +524,86 @@ fn translate_units(settings: &Settings, units: &[Unit]) -> Result<Vec<Translated
         .collect())
 }
 
+/// 公開ヘッダをすべて include するだけの翻訳単位を組み立て、変換する。
+///
+/// cinrs が変換できるのは翻訳単位（`.c` と、そこから読まれるヘッダ）で、ヘッダを
+/// 単体では渡せない。そこで、`#include` だけを並べた C のコードを作る。
+fn translate_public_api(settings: &Settings, public_headers: &[String]) -> Result<Translated> {
+    let mut source = String::from(
+        "/* mini-ffmpeg-sys のビルドスクリプトが組み立てた翻訳単位。\n\
+         * ビルドマニフェストの public_headers を include する。 */\n",
+    );
+
+    for header in public_headers {
+        let _ = writeln!(source, "#include \"{header}\"");
+    }
+
+    let output = settings
+        .translate_public_api(PUBLIC_API_SOURCE_NAME, &source)
+        .map_err(|error| format!("公開ヘッダを変換できません。\n\n{error}"))?;
+
+    // 公開 API の翻訳単位は宣言と型だけを持つ。シンボルを定義していると、実装の
+    // 翻訳単位の定義と重なり、利用する側のリンクで失敗する。
+    if !output.symbols.is_empty() {
+        return Err(format!(
+            "公開ヘッダの翻訳単位が、シンボルを定義しています: {:?}",
+            output.symbols,
+        ));
+    }
+
+    Ok(output)
+}
+
+/// 公開 API が宣言している FFmpeg の関数と変数が、すべて実装の翻訳単位で
+/// 定義されていることを確かめる。
+///
+/// 宣言だけで定義が無い名前は、Rust のコードからは呼べるように見えるが、呼ぶと
+/// 利用する側のリンクで失敗する。このクレートのビルドでは気づけないので、ここで
+/// 確かめる。
+///
+/// この構成で定義されないと分かっている名前は、[`UNDEFINED_PUBLIC_DECLARATIONS`]
+/// に理由とともに並べる。並べた名前が宣言から消えたり、定義されるようになったり
+/// したら、役目を終えた項目が残らないよう、それも止める。
+fn check_public_declarations(public_api: &Translated, translated: &[Translated]) -> Result<()> {
+    let defined: BTreeSet<&str> = translated
+        .iter()
+        .flat_map(|output| output.symbols.iter().map(String::as_str))
+        .collect();
+
+    let declared: BTreeSet<&str> = public_api
+        .declarations
+        .iter()
+        .map(String::as_str)
+        .filter(|name| name.starts_with(FFMPEG_PUBLIC_PREFIX))
+        .collect();
+
+    let missing: Vec<&str> = declared
+        .iter()
+        .copied()
+        .filter(|name| !defined.contains(name) && !UNDEFINED_PUBLIC_DECLARATIONS.contains(name))
+        .collect();
+
+    if !missing.is_empty() {
+        return Err(format!(
+            "公開ヘッダが宣言している {} 個の名前が、どの翻訳単位でも定義されていません。\n\
+             構成で無効にした部品の宣言であれば、UNDEFINED_PUBLIC_DECLARATIONS に理由とともに\
+             足してください。\n{missing:?}",
+            missing.len(),
+        ));
+    }
+
+    for name in UNDEFINED_PUBLIC_DECLARATIONS {
+        if !declared.contains(name) || defined.contains(name) {
+            return Err(format!(
+                "UNDEFINED_PUBLIC_DECLARATIONS の {name} は、もう公開ヘッダに宣言が無いか、\
+                 定義されるようになりました。項目を削除してください。"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 /// 同じ C のシンボルを、2 つ以上の翻訳単位が定義していないことを確かめる。
 ///
 /// 翻訳単位は Rust のモジュールとしては別々なので、名前が重なっても rustc は
@@ -486,6 +639,19 @@ fn render_unit(unit: &Unit, rust: &str) -> String {
     )
 }
 
+/// 公開ヘッダを変換したファイルを組み立てる。cinrs が出力したコードに、説明を付ける。
+fn render_public_api(rust: &str) -> String {
+    format!(
+        "//! FFmpeg の公開ヘッダ（ビルドマニフェストの `public_headers`）を、cinrs で\n\
+         //! Rust に変換したもの。\n\
+         //!\n\
+         //! 関数は宣言だけで、実体はライブラリのモジュールの翻訳単位が持つ。両者は\n\
+         //! C のシンボルの名前で繋がる。\n\
+         \n\
+         {rust}\n"
+    )
+}
+
 /// モジュールの宣言のファイルを組み立てる。`libavutil/time.c` を
 /// `libavutil::time` として読めるように、ライブラリのモジュールの中に、
 /// 翻訳単位のモジュールを宣言する。
@@ -501,27 +667,48 @@ fn render_root(out_dir: &Path, units: &[Unit]) -> Result<String> {
         by_library.entry(&unit.library).or_default().push(unit);
     }
 
+    let path_literal = |file: PathBuf| -> Result<String> {
+        let file = file.to_str().ok_or_else(|| {
+            format!(
+                "出力先のパス {} を UTF-8 の文字列にできません",
+                file.display()
+            )
+        })?;
+
+        // `{:?}` で、パスを Rust の文字列リテラルにする。Windows のパスの
+        // `\` などが、エスケープされる。
+        Ok(format!("{file:?}"))
+    };
+
     let mut out = String::new();
 
+    // 公開 API。クレートのルートに再エクスポートして、`mini_ffmpeg_sys::av_log`
+    // のように使えるようにする。
+    let _ = writeln!(
+        out,
+        "/// FFmpeg の公開ヘッダを変換したもの。中身をクレートのルートに再エクスポートする。\n\
+         #[path = {}]\n\
+         mod public_api;\n\
+         \n\
+         pub use public_api::*;\n",
+        path_literal(out_dir.join(PUBLIC_API_FILE))?,
+    );
+
     for (library, units) in by_library {
+        // 実装の翻訳単位は、利用者に見せるものではないので、ドキュメントから隠す。
+        // 定義は `#[no_mangle]` のシンボルなので、モジュールが見えるかどうかに
+        // 関係なく出力され、公開 API の宣言から使える。
         let _ = writeln!(
             out,
             "/// {library} の翻訳単位。FFmpeg の `.c` 1 つにつき、モジュールを 1 つ置く。\n\
+             #[doc(hidden)]\n\
              pub mod {library} {{",
         );
 
         for unit in units {
-            let file = out_dir.join(unit.module_file());
-            let file = file.to_str().ok_or_else(|| {
-                format!(
-                    "出力先のパス {} を UTF-8 の文字列にできません",
-                    file.display()
-                )
-            })?;
+            let file = path_literal(out_dir.join(unit.module_file()))?;
 
-            // `{:?}` で、パスを Rust の文字列リテラルにする。Windows のパスの
-            // `\` などが、エスケープされる。
-            let _ = writeln!(out, "    #[path = {file:?}]\n    pub mod {};", unit.name);
+            let _ = writeln!(out, "    #[path = {file}]\n    pub mod {};", unit.name);
         }
 
         out.push_str("}\n\n");
