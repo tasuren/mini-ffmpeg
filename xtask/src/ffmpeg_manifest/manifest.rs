@@ -46,6 +46,13 @@ pub struct Manifest {
     /// ビルドディレクトリからの相対パスで、`FFmpeg_generated/` 以下に同じパスで
     /// コピーされる。
     pub generated: Vec<String>,
+
+    /// 翻訳単位が include したヘッダのうち、FFmpeg が公開の API としてインストール
+    /// するもの。`headers` と `generated` の一部で、`#include` に書く名前
+    /// （`libavutil/avutil.h` の形）で持つ。
+    ///
+    /// ライブラリを使う側に見せる宣言と型を、ここから取り込む。
+    pub public_headers: Vec<String>,
 }
 
 /// インクルードディレクトリが、どこを起点にしたパスかを表す。
@@ -194,6 +201,12 @@ impl Manifest {
              # `FFmpeg_generated/` からの相対パス。\n",
         );
         write_array(&mut out, "generated", &self.generated);
+
+        out.push_str(
+            "\n# 上の `headers` と `generated` のうち、FFmpeg が公開の API としてインストール\n\
+             # するヘッダ。`#include` に書く名前で、インクルードディレクトリから見つかる。\n",
+        );
+        write_array(&mut out, "public_headers", &self.public_headers);
 
         out
     }

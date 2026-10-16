@@ -10,7 +10,9 @@
 //!    インクルードディレクトリやマクロ定義がここから分かる。
 //! 3. `make` で実際にビルドする。コンパイラが翻訳単位ごとに書き出す依存関係
 //!    ファイル（`.d`）から、include されたファイルが分かる。
-//! 4. ビルドマニフェストを `cinrs_manifest.toml` に書き出し、`configure` と `make` の生成物の
+//! 4. `make -n install-headers` で、FFmpeg が公開の API としてインストールする
+//!    ヘッダを得る。そのうち、翻訳単位が include したものを公開ヘッダとする。
+//! 5. ビルドマニフェストを `cinrs_manifest.toml` に書き出し、`configure` と `make` の生成物の
 //!    うち必要なものを `FFmpeg_generated/` にコピーする。
 //!
 //! 読み書きする場所は、すべて `mini-ffmpeg-sys` の中にある。FFmpeg のツリーは
@@ -22,6 +24,7 @@
 
 mod compile_command;
 mod depfile;
+mod install_headers;
 mod manifest;
 
 use std::{
@@ -35,6 +38,7 @@ use std::{
 
 use self::{
     compile_command::{CompileCommand, CompileFlags},
+    install_headers::InstalledHeader,
     manifest::{IncludeDir, Manifest, to_slash_path},
 };
 use crate::{MANIFEST_FILE, Result, sys_crate_dir, workspace_root};
@@ -146,19 +150,24 @@ pub fn run() -> Result<()> {
     println!("make を実行しています（翻訳単位 {} 個）...", commands.len());
     build(&paths)?;
 
-    let manifest = collect(&paths, &commands)?;
+    let installed_headers = dry_run_installed_headers(&paths)?;
+
+    let manifest = collect(&paths, &commands, &installed_headers)?;
     write_outputs(&paths, &manifest)?;
 
     println!(
         "{} に書き出しました。\n  \
          FFmpeg {}\n  \
-         翻訳単位 {} 個、include されるだけのソース {} 個、ヘッダ {} 個、生成物 {} 個",
+         翻訳単位 {} 個、include されるだけのソース {} 個、ヘッダ {} 個、生成物 {} 個\n  \
+         公開ヘッダ {} 個（インストールされる {} 個のうち、翻訳単位が include したもの）",
         paths.sys_crate.display(),
         manifest.ffmpeg_version,
         manifest.translation_units.len(),
         manifest.included_sources.len(),
         manifest.headers.len(),
         manifest.generated.len(),
+        manifest.public_headers.len(),
+        installed_headers.len(),
     );
 
     Ok(())
@@ -214,6 +223,43 @@ fn dry_run_compile_commands(paths: &Paths) -> Result<Vec<CompileCommand>> {
     Ok(commands)
 }
 
+/// `make -n install-headers` を実行し、表示されたコマンドから、インストールされる
+/// ヘッダを集める。
+///
+/// `-n` はコマンドを表示するだけなので、インストール先には何も書き込まれない。
+/// インストール先のディレクトリは、ライブラリの名前を読むのにだけ使う。
+fn dry_run_installed_headers(paths: &Paths) -> Result<Vec<InstalledHeader>> {
+    let output = Command::new("make")
+        .args(["-n", "install-headers"])
+        .current_dir(&paths.build_dir)
+        .output()
+        .map_err(|error| format!("make を実行できません: {error}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "make -n install-headers が失敗しました（{}）\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr),
+        )
+        .into());
+    }
+
+    let stdout = String::from_utf8(output.stdout)?;
+    let mut headers = Vec::new();
+
+    for line in stdout.lines() {
+        headers.extend(install_headers::parse_line(line)?);
+    }
+
+    if headers.is_empty() {
+        return Err(
+            "make -n install-headers の出力に、ヘッダをインストールするコマンドがありません".into(),
+        );
+    }
+
+    Ok(headers)
+}
+
 fn build(paths: &Paths) -> Result<()> {
     let jobs = thread::available_parallelism().map_or(1, usize::from);
 
@@ -256,7 +302,11 @@ fn run_logged(mut command: Command, log_path: &Path) -> Result<()> {
 }
 
 /// ビルド結果とコンパイルコマンドから、ビルドマニフェストを組み立てる。
-fn collect(paths: &Paths, commands: &[CompileCommand]) -> Result<Manifest> {
+fn collect(
+    paths: &Paths,
+    commands: &[CompileCommand],
+    installed_headers: &[InstalledHeader],
+) -> Result<Manifest> {
     check_built_objects(paths, commands)?;
 
     let flags = common_flags(commands)?;
@@ -312,6 +362,15 @@ fn collect(paths: &Paths, commands: &[CompileCommand]) -> Result<Manifest> {
         .map(|raw| IncludeDir::classify(raw, &paths.ffmpeg_src))
         .collect::<Result<Vec<_>>>()?;
 
+    let generated: Vec<String> = generated.into_iter().collect();
+
+    let public_headers = install_headers::select_public_headers(
+        installed_headers,
+        &paths.ffmpeg_src,
+        &headers,
+        &generated,
+    )?;
+
     Ok(Manifest {
         ffmpeg_version: read_ffmpeg_version(paths)?,
         configure_args: CONFIGURE_ARGS.iter().map(|arg| (*arg).to_owned()).collect(),
@@ -323,7 +382,8 @@ fn collect(paths: &Paths, commands: &[CompileCommand]) -> Result<Manifest> {
         translation_units: translation_units.into_iter().collect(),
         included_sources,
         headers,
-        generated: generated.into_iter().collect(),
+        generated,
+        public_headers,
     })
 }
 

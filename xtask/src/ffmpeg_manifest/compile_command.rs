@@ -164,7 +164,7 @@ fn push_unique(values: &mut Vec<String>, value: String) {
 /// 扱うのは、`make` が表示するコマンドに現れる範囲の引用符とバックスラッシュ
 /// だけで、変数展開などは解釈しない。引用符が閉じていないなど、分割できない
 /// 行には `None` を返す。
-fn split_shell_words(line: &str) -> Option<Vec<String>> {
+pub(super) fn split_shell_words(line: &str) -> Option<Vec<String>> {
     let mut words = Vec::new();
     let mut current = String::new();
 
