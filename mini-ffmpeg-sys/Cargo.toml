@@ -17,16 +17,13 @@ publish = false # まだ開発が終わっておらず確認したい項目が�
 
 [build-dependencies]
 # C を Rust に変換する本体。cinrs のマクロ（`c17!` など）が内部で使っているもので、
-# ビルドスクリプトがこれを直接呼ぶ。
+# ビルドスクリプトがこれを直接呼ぶ。翻訳単位が使う項目だけを出力する指定
+# （`Options::reachable_only`）が 0.3.0 で入ったので、それ以降が要る。
 #
-# crates.io の 0.2.0 には、翻訳単位が使う項目だけを出力する指定
-# （`Options::reachable_only`）が無いので、Git のコミットを固定して使う。
-# 上流（tanakh/cinrs）の master に、Mach-O での `__asm` のラベルの修正を足した
-# fork のコミット。修正が上流に入ったら、上流のコミットに切り替える。
-#
-# crates.io は Git の依存を受け付けない。このクレートを公開できるのは、上の 2 つを
-# 含む cinrs-core が crates.io に公開されてから。
-cinrs-core = { git = "https://github.com/tasuren/cinrs", rev = "bb33d7acff45656b16f3346cb53aa9235dc8d350" }
+# バージョンは `=` で固定する。cinrs-core は cinrs の内部のクレートで、変換の結果や
+# API がバージョンで変わりうる。上げるときは、`cargo test --workspace` に加えて、
+# 変換後のコード（`OUT_DIR` の中）がどう変わったかも見る。
+cinrs-core = "=0.3.0"
 
 # cinrs-core が返す変換後のコード（トークンの並び）を、ファイルに書き出すために使う。
 # cinrs-core 自身が依存しているクレートで、依存の数は増えない。

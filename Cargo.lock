@@ -32,8 +32,9 @@ dependencies = [
 
 [[package]]
 name = "cinrs-core"
-version = "0.2.0"
-source = "git+https://github.com/tasuren/cinrs?rev=bb33d7acff45656b16f3346cb53aa9235dc8d350#bb33d7acff45656b16f3346cb53aa9235dc8d350"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a2cd47ca8a76c3c4998bc691eccbe831e2a4366922620f9467f5d230b786c2c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -47,7 +48,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ba7806cd8c2eb0c09ea3202bd3d0e77e16ce9e55b3b70b1e8c451d3117eeab5"
 dependencies = [
- "cinrs-core 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cinrs-core 0.2.0",
  "proc-macro2",
 ]
 
@@ -90,7 +91,7 @@ version = "0.1.0"
 name = "mini-ffmpeg-sys"
 version = "0.1.0"
 dependencies = [
- "cinrs-core 0.2.0 (git+https://github.com/tasuren/cinrs?rev=bb33d7acff45656b16f3346cb53aa9235dc8d350)",
+ "cinrs-core 0.3.0",
  "proc-macro2",
  "toml",
 ]

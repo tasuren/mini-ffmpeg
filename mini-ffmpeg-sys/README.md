@@ -133,6 +133,6 @@ cargo package -p mini-ffmpeg-sys --list --allow-dirty
 ```
 
 このクレートは、まだ公開できる状態ではありません（`publish = false`）。
-ビルドスクリプトが使う cinrs は、未公開のコミットを Git の依存として指定して
-います。crates.io は Git の依存を受け付けないので、必要な変更を含む cinrs が
-公開されるまで、このクレートも公開できません。
+配布に含める FFmpeg のファイルの絞り込みと、docs.rs でのビルドの扱いが残っています。
+docs.rs はビルドスクリプトを Linux で実行するので、そのままでは C コードの変換に
+失敗します。

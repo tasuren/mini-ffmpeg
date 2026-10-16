@@ -10,9 +10,9 @@
  * ヘッダを include する前に、このファイルを include する。
  *
  * どの項目も cinrs 0.2.0 と macOS 27 の SDK の組み合わせで必要だったもの。
- * `_Float16` の件を除いて、0.2.0 より後の cinrs では直っている。FFmpeg 本体
- * （`mini-ffmpeg-sys`）の変換は新しい cinrs で行っていて、このファイルを
- * 使わない。このクレートが使う cinrs を上げたら、項目を 1 つずつ外して
+ * `_Float16` の件を除いて、cinrs 0.3.0 では直っている。FFmpeg 本体
+ * （`mini-ffmpeg-sys`）の変換は 0.3.0 で行っていて、このファイルを使わない。
+ * このクレートが使う cinrs を上げたら、項目を 1 つずつ外して
  * `cargo test -p remux-spike` が通ることを確かめ、消していける。
  */
 
