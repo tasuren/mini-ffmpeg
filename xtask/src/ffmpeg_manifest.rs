@@ -26,6 +26,7 @@ mod compile_command;
 mod depfile;
 mod install_headers;
 mod manifest;
+mod source_tree;
 
 use std::{
     collections::BTreeSet,
@@ -40,6 +41,7 @@ use self::{
     compile_command::{CompileCommand, CompileFlags},
     install_headers::InstalledHeader,
     manifest::{IncludeDir, Manifest, to_slash_path},
+    source_tree::{Location, SourceTree},
 };
 use crate::{MANIFEST_FILE, Result, sys_crate_dir, workspace_root};
 
@@ -81,13 +83,6 @@ const FFMPEG_DIR: &str = "FFmpeg";
 /// このタスクが丸ごと管理するディレクトリで、実行のたびに作り直す。手で
 /// ファイルを置いても消える。
 const GENERATED_DIR: &str = "FFmpeg_generated";
-
-/// FFmpeg のビルドで、ツリーを指すシンボリックリンクの名前。
-///
-/// ツリーの外でビルドすると、`configure` がビルドディレクトリにこの名前の
-/// リンクを作る。コンパイルコマンドのソースも、依存関係ファイルのパスも、
-/// ツリー内のファイルはこのリンク越しのパス（`src/libavutil/log.c`）で書かれる。
-const SOURCE_LINK: &str = "src";
 
 /// このタスクが読み書きする場所。
 struct Paths {
@@ -143,6 +138,8 @@ pub fn run() -> Result<()> {
     println!("configure を実行しています...");
     configure(&paths)?;
 
+    let tree = SourceTree::read(&paths.build_dir, &paths.ffmpeg_src)?;
+
     // 実際にビルドした後では、`make -n` は「やることが無い」としてコマンドを
     // 表示しない。必ずビルドの前に取得する。
     let commands = dry_run_compile_commands(&paths)?;
@@ -152,7 +149,7 @@ pub fn run() -> Result<()> {
 
     let installed_headers = dry_run_installed_headers(&paths)?;
 
-    let manifest = collect(&paths, &commands, &installed_headers)?;
+    let manifest = collect(&paths, &tree, &commands, &installed_headers)?;
     write_outputs(&paths, &manifest)?;
 
     println!(
@@ -304,6 +301,7 @@ fn run_logged(mut command: Command, log_path: &Path) -> Result<()> {
 /// ビルド結果とコンパイルコマンドから、ビルドマニフェストを組み立てる。
 fn collect(
     paths: &Paths,
+    tree: &SourceTree,
     commands: &[CompileCommand],
     installed_headers: &[InstalledHeader],
 ) -> Result<Manifest> {
@@ -316,7 +314,7 @@ fn collect(
     let mut generated = BTreeSet::new();
 
     for command in commands {
-        let Dependency::Tree(source) = Dependency::classify(&command.source) else {
+        let Location::Tree(source) = tree.classify(&command.source) else {
             // ビルド中に生成した `.c` をコンパイルする構成がある。バイナリを C の
             // 配列に変換して埋め込むもので、`ffbuild/common.mak` の `RUN_BIN2C` を
             // 使う規則がこれに当たる。CUDA のフィルタ（`*.ptx.c`）、Vulkan の
@@ -341,10 +339,10 @@ fn collect(
             .map_err(|error| format!("{} を読めません: {error}", depfile_path.display()))?;
 
         for dependency in depfile::parse_dependencies(&depfile)? {
-            match Dependency::classify(&dependency) {
-                Dependency::Tree(path) => tree_dependencies.insert(path),
-                Dependency::Generated(path) => generated.insert(path),
-                Dependency::External => false,
+            match tree.classify(&dependency) {
+                Location::Tree(path) => tree_dependencies.insert(path),
+                Location::Generated(path) => generated.insert(path),
+                Location::External => false,
             };
         }
     }
@@ -359,17 +357,13 @@ fn collect(
     let include_dirs = flags
         .include_dirs
         .iter()
-        .map(|raw| IncludeDir::classify(raw, &paths.ffmpeg_src))
+        .map(|raw| IncludeDir::classify(raw, tree))
         .collect::<Result<Vec<_>>>()?;
 
     let generated: Vec<String> = generated.into_iter().collect();
 
-    let public_headers = install_headers::select_public_headers(
-        installed_headers,
-        &paths.ffmpeg_src,
-        &headers,
-        &generated,
-    )?;
+    let public_headers =
+        install_headers::select_public_headers(installed_headers, tree, &headers, &generated)?;
 
     Ok(Manifest {
         ffmpeg_version: read_ffmpeg_version(paths)?,
@@ -385,35 +379,6 @@ fn collect(
         generated,
         public_headers,
     })
-}
-
-/// 依存関係ファイルやコンパイルコマンドに書かれたパスが、どこのファイルかを表す。
-enum Dependency {
-    /// FFmpeg のツリーにあるファイル。ツリーからの相対パス。
-    Tree(String),
-
-    /// `configure` や `make` が生成したファイル。ビルドディレクトリからの相対パス。
-    Generated(String),
-
-    /// どちらでもないファイル。システムのヘッダや SDK の設定ファイルなど。
-    External,
-}
-
-impl Dependency {
-    fn classify(raw: &str) -> Self {
-        let path = Path::new(raw);
-
-        if path.is_absolute() {
-            return Self::External;
-        }
-
-        // ビルドディレクトリで `make` を実行しているので、相対パスはすべて
-        // ビルドディレクトリが起点。そのうち `src/` 以下がツリー内のファイル。
-        match path.strip_prefix(SOURCE_LINK) {
-            Ok(relative) => Self::Tree(to_slash_path(relative)),
-            Err(_) => Self::Generated(to_slash_path(path)),
-        }
-    }
 }
 
 /// 全翻訳単位のフラグが同じであることを確かめ、その共通のフラグを返す。
@@ -481,8 +446,9 @@ fn find_objects(root: &Path, dir: &Path, objects: &mut BTreeSet<String>) -> Resu
         let path = entry.path();
 
         // `DirEntry::file_type` による `is_dir` はシンボリックリンクを辿らない。
-        // ビルドディレクトリには FFmpeg のツリーを指す `src` というリンクがあり、
-        // 辿るとツリー全体を走査してしまうので、この性質に頼っている。
+        // リンクを作れる環境では、ビルドディレクトリに FFmpeg のツリーを指す
+        // `src` というリンクがあり、辿るとツリー全体を走査してしまうので、この
+        // 性質に頼っている。
         let file_type = entry.file_type()?;
 
         if file_type.is_dir() {

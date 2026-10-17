@@ -2,7 +2,10 @@
 
 use std::{fmt::Write as _, path::Path};
 
-use super::{FFMPEG_DIR, GENERATED_DIR};
+use super::{
+    FFMPEG_DIR, GENERATED_DIR,
+    source_tree::{Location, SourceTree},
+};
 use crate::Result;
 
 /// FFmpeg のビルド結果から読み取った、cinrs で取り込むために必要な情報。
@@ -80,28 +83,18 @@ impl IncludeDir {
     /// ツリーは `src` というシンボリックリンク越しか、絶対パスで参照される。
     ///
     /// - `.` などの相対パスは、ビルドディレクトリが起点。
-    /// - `src/` で始まる相対パスと、`ffmpeg_src` 以下の絶対パスは、FFmpeg の
-    ///   ツリーが起点。
+    /// - `tree` がツリーとみなすパスは、FFmpeg のツリーが起点。
     ///
     /// どちらにも当たらない絶対パスはエラーにする。マシン固有のディレクトリを
     /// 見ていることになり、他の環境で再現できないため。
-    pub fn classify(raw: &str, ffmpeg_src: &Path) -> Result<Self> {
-        let path = Path::new(raw);
-
-        if let Ok(relative) = path.strip_prefix(ffmpeg_src) {
-            return Ok(Self::new(IncludeRoot::Ffmpeg, relative));
-        }
-
-        if path.is_absolute() {
-            return Err(format!(
+    pub fn classify(raw: &str, tree: &SourceTree) -> Result<Self> {
+        match tree.classify(raw) {
+            Location::Tree(path) => Ok(Self::new(IncludeRoot::Ffmpeg, path)),
+            Location::Generated(path) => Ok(Self::new(IncludeRoot::Generated, path)),
+            Location::External => Err(format!(
                 "FFmpeg のツリーの外にあるインクルードディレクトリには未対応です: {raw}"
             )
-            .into());
-        }
-
-        match path.strip_prefix("src") {
-            Ok(relative) => Ok(Self::new(IncludeRoot::Ffmpeg, relative)),
-            Err(_) => Ok(Self::new(IncludeRoot::Generated, path)),
+            .into()),
         }
     }
 
@@ -123,9 +116,7 @@ impl IncludeDir {
         }
     }
 
-    fn new(root: IncludeRoot, relative: &Path) -> Self {
-        let path = to_slash_path(relative);
-
+    fn new(root: IncludeRoot, path: String) -> Self {
         Self {
             root,
             path: if path.is_empty() {
@@ -256,8 +247,12 @@ fn toml_string(value: &str) -> String {
 mod tests {
     use super::*;
 
+    fn tree() -> SourceTree {
+        SourceTree::new(&["src", "/work/FFmpeg"])
+    }
+
     fn classify(raw: &str) -> IncludeDir {
-        IncludeDir::classify(raw, Path::new("/work/FFmpeg")).unwrap()
+        IncludeDir::classify(raw, &tree()).unwrap()
     }
 
     fn dir(root: IncludeRoot, path: &str) -> IncludeDir {
@@ -308,7 +303,7 @@ mod tests {
 
     #[test]
     fn rejects_absolute_path_outside_ffmpeg_tree() {
-        assert!(IncludeDir::classify("/opt/homebrew/include", Path::new("/work/FFmpeg")).is_err());
+        assert!(IncludeDir::classify("/opt/homebrew/include", &tree()).is_err());
     }
 
     /// ビルドマニフェストに書き出すパスは、取り込みのコードの `#pragma cinrs include_path` に
