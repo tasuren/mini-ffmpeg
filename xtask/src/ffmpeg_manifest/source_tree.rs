@@ -156,8 +156,8 @@ fn is_absolute(raw: &str) -> bool {
 /// xtask が知っているパスを、ビルドの出力と比べられる `/` 区切りの形にする。
 ///
 /// Windows で `canonicalize` したパスには `\\?\` が付くが、コンパイラが書き出す
-/// パスには付かないので外す。
-fn native_path(path: &Path) -> String {
+/// パスには付かないので外す。MSYS2 の bash にパスを渡すときも、この形にする。
+pub(super) fn native_path(path: &Path) -> String {
     let path = path.to_string_lossy();
     let path = path.strip_prefix(r"\\?\").unwrap_or(&path);
 

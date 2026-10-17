@@ -74,6 +74,12 @@ const CONFIGURE_ARGS: &[&str] = &[
     "--enable-demuxer=wav",
     "--enable-muxer=wav",
     "--enable-protocol=file,pipe",
+    // MSVC の `cl.exe` を使わせる。これが無いと `configure` は gcc を探す。
+    // OS ではなくコンパイラの選択なので、`windows` だけでなく `msvc` も条件にする。
+    // `configure_args` はビルドマニフェストに記録されるため、Windows 向けの
+    // ビルドマニフェストは他の OS のものとは別物になる。
+    #[cfg(all(windows, target_env = "msvc"))]
+    "--toolchain=msvc",
 ];
 
 /// FFmpeg のツリー（サブモジュール）。`mini-ffmpeg-sys` からの相対パス。
@@ -173,7 +179,14 @@ pub fn run() -> Result<()> {
 }
 
 fn configure(paths: &Paths) -> Result<()> {
-    let mut command = Command::new(paths.ffmpeg_src.join("configure"));
+    // Windows ではシェルスクリプトを直接実行できないので、bash 越しに実行する。
+    // 他の OS でも揃えて bash を通すので、実行権限にも依存しない。
+    // `canonicalize` した Windows のパスは `\\?\` 付きで bash が読めないため、
+    // `native_path` で直す。
+    let script = source_tree::native_path(&paths.ffmpeg_src.join("configure"));
+
+    let mut command = Command::new("bash");
+    command.arg(script);
     command.args(CONFIGURE_ARGS).current_dir(&paths.build_dir);
 
     run_logged(command, &paths.build_dir.join("xtask-configure.log")).map_err(|error| {
