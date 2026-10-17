@@ -9,6 +9,10 @@
 //! `CC_C` は `-c`、`CC_O` は `-o <オブジェクト>` なので、コマンドは必ず
 //! `... -c -o foo.o src/foo.c` の形で終わる。ここではその形を前提に、
 //! オブジェクト、ソース、プリプロセスに影響するフラグを取り出す。
+//!
+//! MSVC（`--toolchain=msvc`）では、`configure` が `CC_O` を `-Fo<オブジェクト>` に、
+//! C の規格の指定を `/std:c17` にする。オブジェクトのパスが別の語にならないので、
+//! この形も読めるようにしている。
 
 use std::path::Path;
 
@@ -32,7 +36,7 @@ pub struct CompileCommand {
 /// フラグは cinrs の側に対応するものが無いので、意図的に捨てている。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CompileFlags {
-    /// `-std=` の値。
+    /// `-std=`（MSVC では `/std:`）の値。
     pub std: Option<String>,
 
     /// `-D` の値。`NAME` または `NAME=VALUE` の形で、コマンドに現れた順。
@@ -54,6 +58,9 @@ const UNSUPPORTED_FLAGS: &[&str] = &[
     "-isystem",
     "-iquote",
     "-idirafter",
+    // MSVC の強制インクルード。`-include` に当たる。
+    "-FI",
+    "/FI",
 ];
 
 /// コマンド 1 行を読み、C のコンパイルコマンドであればその内容を返す。
@@ -92,17 +99,24 @@ pub fn parse_line(line: &str) -> Result<Option<CompileCommand>> {
     }))
 }
 
-/// コンパイルコマンド（`-c` と `-o <何か>.o` を持つ）であれば、オブジェクトの
-/// パスを返す。
+/// コンパイルコマンド（`-c` と、`-o <何か>.o` または `-Fo<何か>.o` を持つ）で
+/// あれば、オブジェクトのパスを返す。
 fn find_object(words: &[String]) -> Option<&str> {
     if !words.iter().any(|word| word == "-c") {
         return None;
     }
 
-    words
+    let gcc_style = words
         .windows(2)
         .find(|pair| pair[0] == "-o" && pair[1].ends_with(".o"))
-        .map(|pair| pair[1].as_str())
+        .map(|pair| pair[1].as_str());
+
+    gcc_style.or_else(|| {
+        words
+            .iter()
+            .find_map(|word| word.strip_prefix("-Fo"))
+            .filter(|object| object.ends_with(".o"))
+    })
 }
 
 fn parse_flags(words: &[String]) -> Result<CompileFlags> {
@@ -120,7 +134,10 @@ fn parse_flags(words: &[String]) -> Result<CompileFlags> {
             .into());
         }
 
-        if let Some(std) = word.strip_prefix("-std=") {
+        if let Some(std) = word
+            .strip_prefix("-std=")
+            .or_else(|| word.strip_prefix("/std:"))
+        {
             flags.std = Some(std.to_owned());
         } else if let Some(value) = flag_value(word, "-D", &mut words)? {
             push_unique(&mut flags.defines, value);
@@ -269,6 +286,46 @@ mod tests {
         );
     }
 
+    /// `n9.0.2` の FFmpeg を Windows で `--toolchain=msvc` を付けて構成したときの
+    /// 実際のコマンドから、警告のフラグを省き、パスを短くしたもの。
+    const REAL_MSVC_COMMAND: &str = "cl.exe -I. -I/work/FFmpeg/ -D_ISOC11_SOURCE \
+        -DWIN32_LEAN_AND_MEAN -D_WIN32_WINNT=0x0600 -I/work/FFmpeg/compat/atomics/win32 \
+        -DHAVE_AV_CONFIG_H -nologo -options:strict  /std:c17  -Z7 -O2   -utf-8    \
+        -c -Folibavutil/log.o /work/FFmpeg/libavutil/log.c";
+
+    #[test]
+    fn parses_real_msvc_compile_command() {
+        let command = parse_line(REAL_MSVC_COMMAND).unwrap().unwrap();
+
+        assert_eq!(command.object, "libavutil/log.o");
+        assert_eq!(command.source, "/work/FFmpeg/libavutil/log.c");
+        assert_eq!(command.flags.std.as_deref(), Some("c17"));
+        assert_eq!(
+            command.flags.defines,
+            [
+                "_ISOC11_SOURCE",
+                "WIN32_LEAN_AND_MEAN",
+                "_WIN32_WINNT=0x0600",
+                "HAVE_AV_CONFIG_H",
+            ],
+        );
+        assert_eq!(
+            command.flags.include_dirs,
+            [".", "/work/FFmpeg/", "/work/FFmpeg/compat/atomics/win32"],
+        );
+    }
+
+    /// MSVC では、依存関係ファイルを `-showIncludes -Zs` によるプリプロセスだけの
+    /// 実行で作る。コンパイルではないので、翻訳単位として数えないこと。
+    #[test]
+    fn ignores_msvc_dependency_command() {
+        let line = "cl.exe -I. -DHAVE_AV_CONFIG_H -showIncludes -Zs -nologo /std:c17 \
+            /work/FFmpeg/libavutil/log.c 2>&1 | awk '/including/ { print \"libavutil/log.o:\", $0 }' \
+            > libavutil/log.d";
+
+        assert_eq!(parse_line(line).unwrap(), None);
+    }
+
     /// `make -n` の出力には、アーカイブの作成やスクリプトの実行など、コンパイル
     /// 以外のコマンドが混ざる。これらを翻訳単位として数えないこと。
     #[test]
@@ -300,7 +357,13 @@ mod tests {
     /// 無視してcinrs_manifest.tomlを作ると、元のビルドと違うものを取り込むことになる。
     #[test]
     fn rejects_unsupported_preprocessor_flags() {
-        for flag in ["-include config.h", "-UPIC", "-isystem /opt/include"] {
+        for flag in [
+            "-include config.h",
+            "-UPIC",
+            "-isystem /opt/include",
+            "-FIconfig.h",
+            "/FIconfig.h",
+        ] {
             let line = format!("gcc {flag} -c -o a.o src/a.c");
 
             assert!(parse_line(&line).is_err(), "{flag}");
