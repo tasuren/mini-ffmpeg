@@ -15,12 +15,13 @@ configure_args = [
     "--enable-demuxer=wav",
     "--enable-muxer=wav",
     "--enable-protocol=file,pipe",
+    "--toolchain=msvc",
 ]
 
 # 生成を行った環境。`FFmpeg_generated/` の内容はこの環境に依存する。
 [host]
-arch = "aarch64"
-os = "macos"
+arch = "x86_64"
+os = "windows"
 
 # 全翻訳単位に共通の、コンパイル時の指定。
 [compile]
@@ -29,7 +30,11 @@ defines = [
     "_ISOC11_SOURCE",
     "_FILE_OFFSET_BITS=64",
     "_LARGEFILE_SOURCE",
-    "PIC",
+    "WIN32_LEAN_AND_MEAN",
+    "_USE_MATH_DEFINES",
+    "_CRT_SECURE_NO_WARNINGS",
+    "_CRT_NONSTDC_NO_WARNINGS",
+    "_WIN32_WINNT=0x0600",
     "HAVE_AV_CONFIG_H",
 ]
 
@@ -38,7 +43,7 @@ defines = [
 include_dirs = [
     "FFmpeg_generated",
     "FFmpeg",
-    "FFmpeg/compat/dispatch_semaphore",
+    "FFmpeg/compat/atomics/win32",
     "FFmpeg/compat/stdbit",
 ]
 
@@ -64,6 +69,7 @@ translation_units = [
     "libavcodec/faandct.c",
     "libavcodec/faanidct.c",
     "libavcodec/fdctdsp.c",
+    "libavcodec/file_open.c",
     "libavcodec/get_buffer.c",
     "libavcodec/h2645_parse.c",
     "libavcodec/idctdsp.c",
@@ -81,6 +87,9 @@ translation_units = [
     "libavcodec/parser.c",
     "libavcodec/parsers.c",
     "libavcodec/profiles.c",
+    "libavcodec/pthread.c",
+    "libavcodec/pthread_frame.c",
+    "libavcodec/pthread_slice.c",
     "libavcodec/qsv_api.c",
     "libavcodec/raw.c",
     "libavcodec/simple_idct.c",
@@ -103,6 +112,7 @@ translation_units = [
     "libavformat/dump.c",
     "libavformat/dv.c",
     "libavformat/file.c",
+    "libavformat/file_open.c",
     "libavformat/format.c",
     "libavformat/id3v1.c",
     "libavformat/id3v2.c",
@@ -235,7 +245,9 @@ included_sources = [
 
 # 翻訳単位が include するヘッダ。FFmpeg のツリーからの相対パス。
 headers = [
+    "compat/atomics/win32/stdatomic.h",
     "compat/va_copy.h",
+    "compat/w32pthreads.h",
     "libavcodec/aac_ac3_parser.h",
     "libavcodec/ac3_parser.h",
     "libavcodec/ac3_parser_internal.h",
@@ -463,6 +475,7 @@ headers = [
     "libavutil/version.h",
     "libavutil/video_enc_params.h",
     "libavutil/video_hint.h",
+    "libavutil/wchar_filename.h",
     "libavutil/xga_font_data.h",
     "libavutil/xtea.h",
 ]
