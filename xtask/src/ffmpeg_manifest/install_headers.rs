@@ -211,7 +211,7 @@ mod tests {
     }
 
     fn tree() -> SourceTree {
-        SourceTree::new(&["src", "/work/FFmpeg"])
+        SourceTree::new(&["src", "/work/FFmpeg"], &["/work/build"])
     }
 
     fn strings(values: &[&str]) -> Vec<String> {

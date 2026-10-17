@@ -14,6 +14,11 @@
 //! パスになり、Windows のプログラムであるコンパイラには、MSYS2 が
 //! `C:/msys64/home/...` の形に変換して渡す。そこで、2 つの変数の値と、xtask が
 //! 知っているツリーのパスのいずれかで始まるパスを、ツリーのファイルとみなす。
+//!
+//! 生成物は、ふつうはビルドディレクトリからの相対パスで書かれる。ただし、MSVC の
+//! 依存関係ファイルは `cl.exe -showIncludes` の出力から作るので、`config.h` も
+//! `C:/.../ffmpeg-build/config.h` のような絶対パスになる。ビルドディレクトリの
+//! 下の絶対パスも、生成物とみなす。
 
 use std::{fs, path::Path};
 
@@ -33,11 +38,14 @@ pub enum Location {
     External,
 }
 
-/// FFmpeg のツリーを指すパスの書き方の一覧。
+/// FFmpeg のツリーと、ビルドディレクトリを指すパスの書き方の一覧。
 #[derive(Debug)]
 pub struct SourceTree {
     /// ツリーのルートの書き方。`/` 区切りで、末尾の `/` は付けない。
     roots: Vec<String>,
+
+    /// ビルドディレクトリの絶対パスの書き方。形は `roots` と同じ。
+    build_roots: Vec<String>,
 }
 
 impl SourceTree {
@@ -48,11 +56,11 @@ impl SourceTree {
         let config = fs::read_to_string(&path)
             .map_err(|error| format!("{} を読めません: {error}", path.display()))?;
 
-        Self::from_config(&config, ffmpeg_src)
+        Self::from_config(&config, ffmpeg_src, &build_dir.canonicalize()?)
             .map_err(|error| format!("{}: {error}", path.display()).into())
     }
 
-    fn from_config(config: &str, ffmpeg_src: &Path) -> Result<Self> {
+    fn from_config(config: &str, ffmpeg_src: &Path, build_dir: &Path) -> Result<Self> {
         // `SRC_PATH:=...` の行もあるが、`=` の直前で区切るので取り違えない。
         let variable = |name: &str| {
             config
@@ -61,30 +69,30 @@ impl SourceTree {
                 .ok_or_else(|| format!("{name} がありません"))
         };
 
-        Ok(Self::new(&[
-            variable("SRC_LINK")?,
-            variable("SRC_PATH")?,
-            &native_path(ffmpeg_src),
-        ]))
+        Ok(Self::new(
+            &[
+                variable("SRC_LINK")?,
+                variable("SRC_PATH")?,
+                &native_path(ffmpeg_src),
+            ],
+            &[&native_path(build_dir)],
+        ))
     }
 
-    pub fn new(roots: &[&str]) -> Self {
-        let mut unique = Vec::new();
-
-        for root in roots {
-            let root = root.trim_end_matches('/').to_owned();
-
-            if !root.is_empty() && !unique.contains(&root) {
-                unique.push(root);
-            }
+    pub fn new(roots: &[&str], build_roots: &[&str]) -> Self {
+        Self {
+            roots: normalize_roots(roots),
+            build_roots: normalize_roots(build_roots),
         }
-
-        Self { roots: unique }
     }
 
     pub fn classify(&self, raw: &str) -> Location {
-        if let Some(relative) = self.roots.iter().find_map(|root| strip_root(raw, root)) {
-            return Location::Tree(to_slash_path(Path::new(relative)));
+        if let Some(relative) = find_relative(raw, &self.roots) {
+            return Location::Tree(relative);
+        }
+
+        if let Some(relative) = find_relative(raw, &self.build_roots) {
+            return Location::Generated(relative);
         }
 
         // ビルドディレクトリで `make` を実行しているので、相対パスはすべて
@@ -95,6 +103,29 @@ impl SourceTree {
             Location::Generated(to_slash_path(Path::new(raw)))
         }
     }
+}
+
+/// 末尾の `/` を落とし、空のものと重複を除く。
+fn normalize_roots(roots: &[&str]) -> Vec<String> {
+    let mut unique = Vec::new();
+
+    for root in roots {
+        let root = root.trim_end_matches('/').to_owned();
+
+        if !root.is_empty() && !unique.contains(&root) {
+            unique.push(root);
+        }
+    }
+
+    unique
+}
+
+/// `raw` がいずれかのルートの下にあれば、そのルートからの相対パスを返す。
+fn find_relative(raw: &str, roots: &[String]) -> Option<String> {
+    roots
+        .iter()
+        .find_map(|root| strip_root(raw, root))
+        .map(|relative| to_slash_path(Path::new(relative)))
 }
 
 /// `raw` が `root` そのものか `root` の下であれば、`root` より後ろを返す。
@@ -122,7 +153,7 @@ fn is_absolute(raw: &str) -> bool {
     raw.starts_with('/') || Path::new(raw).is_absolute()
 }
 
-/// ツリーのパスを、ビルドの出力と比べられる `/` 区切りの形にする。
+/// xtask が知っているパスを、ビルドの出力と比べられる `/` 区切りの形にする。
 ///
 /// Windows で `canonicalize` したパスには `\\?\` が付くが、コンパイラが書き出す
 /// パスには付かないので外す。
@@ -143,16 +174,19 @@ mod tests {
 
     /// macOS や Linux のように、`src` のリンクを作れた構成。
     fn linked() -> SourceTree {
-        SourceTree::new(&["src", "/work/FFmpeg", "/work/FFmpeg"])
+        SourceTree::new(&["src", "/work/FFmpeg", "/work/FFmpeg"], &["/work/build"])
     }
 
     /// Windows の MSYS2 のように、リンクを作れなかった構成。
     fn unlinked() -> SourceTree {
-        SourceTree::new(&[
-            "/home/u/FFmpeg",
-            "/home/u/FFmpeg",
-            "C:/msys64/home/u/FFmpeg",
-        ])
+        SourceTree::new(
+            &[
+                "/home/u/FFmpeg",
+                "/home/u/FFmpeg",
+                "C:/msys64/home/u/FFmpeg",
+            ],
+            &["C:/msys64/home/u/build"],
+        )
     }
 
     fn in_tree(path: &str) -> Location {
@@ -207,12 +241,34 @@ mod tests {
         );
     }
 
+    /// MSVC の依存関係ファイルでは、生成物もビルドディレクトリの絶対パスで
+    /// 書かれる。システムのヘッダと同じ扱いにして、生成物から落とさないこと。
+    #[test]
+    fn classifies_absolute_path_in_build_directory_as_generated() {
+        assert_eq!(
+            unlinked().classify("C:/msys64/home/u/build/config.h"),
+            generated("config.h"),
+        );
+        assert_eq!(
+            unlinked().classify("C:/msys64/home/u/build/libavcodec/codec_list.c"),
+            generated("libavcodec/codec_list.c"),
+        );
+        assert_eq!(
+            linked().classify("/work/build/libavutil/avconfig.h"),
+            generated("libavutil/avconfig.h"),
+        );
+    }
+
     /// 名前が同じ文字で始まるだけの別のディレクトリを、ツリーと取り違えないこと。
     #[test]
     fn does_not_match_prefix_of_component() {
         assert_eq!(linked().classify("srcfoo"), generated("srcfoo"));
         assert_eq!(
             unlinked().classify("/home/u/FFmpegx/a.h"),
+            Location::External
+        );
+        assert_eq!(
+            unlinked().classify("C:/msys64/home/u/buildx/config.h"),
             Location::External
         );
     }
@@ -224,10 +280,18 @@ mod tests {
                       SRC_LINK=/home/u/FFmpeg\n\
                       SRC_PATH:=$(SRC_PATH:.%=..%)\n";
 
-        let tree = SourceTree::from_config(config, Path::new("/elsewhere/FFmpeg")).unwrap();
+        let tree = SourceTree::from_config(
+            config,
+            Path::new("/elsewhere/FFmpeg"),
+            Path::new("/elsewhere/build"),
+        )
+        .unwrap();
 
         assert_eq!(tree.roots, ["/home/u/FFmpeg", "/elsewhere/FFmpeg"]);
-        assert!(SourceTree::from_config("SRC_PATH=/a\n", Path::new("/a")).is_err());
+        assert_eq!(tree.build_roots, ["/elsewhere/build"]);
+        assert!(
+            SourceTree::from_config("SRC_PATH=/a\n", Path::new("/a"), Path::new("/b")).is_err()
+        );
     }
 
     #[cfg(windows)]

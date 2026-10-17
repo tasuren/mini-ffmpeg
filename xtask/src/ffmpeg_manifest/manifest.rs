@@ -248,7 +248,7 @@ mod tests {
     use super::*;
 
     fn tree() -> SourceTree {
-        SourceTree::new(&["src", "/work/FFmpeg"])
+        SourceTree::new(&["src", "/work/FFmpeg"], &["/work/build"])
     }
 
     fn classify(raw: &str) -> IncludeDir {
