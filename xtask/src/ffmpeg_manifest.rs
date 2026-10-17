@@ -26,6 +26,8 @@ mod compile_command;
 mod depfile;
 mod install_headers;
 mod manifest;
+mod source_tree;
+mod target_arch;
 
 use std::{
     collections::BTreeSet,
@@ -40,6 +42,7 @@ use self::{
     compile_command::{CompileCommand, CompileFlags},
     install_headers::InstalledHeader,
     manifest::{IncludeDir, Manifest, to_slash_path},
+    source_tree::{Location, SourceTree},
 };
 use crate::{MANIFEST_FILE, Result, sys_crate_dir, workspace_root};
 
@@ -71,6 +74,12 @@ const CONFIGURE_ARGS: &[&str] = &[
     "--enable-demuxer=wav",
     "--enable-muxer=wav",
     "--enable-protocol=file,pipe",
+    // MSVC の `cl.exe` を使わせる。これが無いと `configure` は gcc を探す。
+    // OS ではなくコンパイラの選択なので、`windows` だけでなく `msvc` も条件にする。
+    // `configure_args` はビルドマニフェストに記録されるため、Windows 向けの
+    // ビルドマニフェストは他の OS のものとは別物になる。
+    #[cfg(all(windows, target_env = "msvc"))]
+    "--toolchain=msvc",
 ];
 
 /// FFmpeg のツリー（サブモジュール）。`mini-ffmpeg-sys` からの相対パス。
@@ -81,13 +90,6 @@ const FFMPEG_DIR: &str = "FFmpeg";
 /// このタスクが丸ごと管理するディレクトリで、実行のたびに作り直す。手で
 /// ファイルを置いても消える。
 const GENERATED_DIR: &str = "FFmpeg_generated";
-
-/// FFmpeg のビルドで、ツリーを指すシンボリックリンクの名前。
-///
-/// ツリーの外でビルドすると、`configure` がビルドディレクトリにこの名前の
-/// リンクを作る。コンパイルコマンドのソースも、依存関係ファイルのパスも、
-/// ツリー内のファイルはこのリンク越しのパス（`src/libavutil/log.c`）で書かれる。
-const SOURCE_LINK: &str = "src";
 
 /// このタスクが読み書きする場所。
 struct Paths {
@@ -143,6 +145,9 @@ pub fn run() -> Result<()> {
     println!("configure を実行しています...");
     configure(&paths)?;
 
+    let tree = SourceTree::read(&paths.build_dir, &paths.ffmpeg_src)?;
+    let target_arch = detect_target_arch(&paths)?;
+
     // 実際にビルドした後では、`make -n` は「やることが無い」としてコマンドを
     // 表示しない。必ずビルドの前に取得する。
     let commands = dry_run_compile_commands(&paths)?;
@@ -152,7 +157,7 @@ pub fn run() -> Result<()> {
 
     let installed_headers = dry_run_installed_headers(&paths)?;
 
-    let manifest = collect(&paths, &commands, &installed_headers)?;
+    let manifest = collect(&paths, &tree, &target_arch, &commands, &installed_headers)?;
     write_outputs(&paths, &manifest)?;
 
     println!(
@@ -174,7 +179,14 @@ pub fn run() -> Result<()> {
 }
 
 fn configure(paths: &Paths) -> Result<()> {
-    let mut command = Command::new(paths.ffmpeg_src.join("configure"));
+    // Windows ではシェルスクリプトを直接実行できないので、bash 越しに実行する。
+    // 他の OS でも揃えて bash を通すので、実行権限にも依存しない。
+    // `canonicalize` した Windows のパスは `\\?\` 付きで bash が読めないため、
+    // `native_path` で直す。
+    let script = source_tree::native_path(&paths.ffmpeg_src.join("configure"));
+
+    let mut command = Command::new("bash");
+    command.arg(script);
     command.args(CONFIGURE_ARGS).current_dir(&paths.build_dir);
 
     run_logged(command, &paths.build_dir.join("xtask-configure.log")).map_err(|error| {
@@ -185,6 +197,28 @@ fn configure(paths: &Paths) -> Result<()> {
         )
         .into()
     })
+}
+
+/// `configure` が使うコンパイラの、ターゲットの CPU アーキテクチャを調べる。
+/// 方法は [`target_arch`] を参照。
+fn detect_target_arch(paths: &Paths) -> Result<String> {
+    fs::write(
+        paths.build_dir.join(target_arch::PROBE_SOURCE),
+        target_arch::PROBE,
+    )?;
+
+    let mut command = Command::new("make");
+    command
+        .args(["V=1", target_arch::PROBE_OUTPUT])
+        .current_dir(&paths.build_dir);
+
+    run_logged(command, &paths.build_dir.join("xtask-target-arch.log"))?;
+
+    let output_path = paths.build_dir.join(target_arch::PROBE_OUTPUT);
+    let output = fs::read_to_string(&output_path)
+        .map_err(|error| format!("{} を読めません: {error}", output_path.display()))?;
+
+    target_arch::parse_preprocessed(&output)
 }
 
 /// `make -n V=1` を実行し、表示されたコマンドから C のコンパイルコマンドを集める。
@@ -304,6 +338,8 @@ fn run_logged(mut command: Command, log_path: &Path) -> Result<()> {
 /// ビルド結果とコンパイルコマンドから、ビルドマニフェストを組み立てる。
 fn collect(
     paths: &Paths,
+    tree: &SourceTree,
+    target_arch: &str,
     commands: &[CompileCommand],
     installed_headers: &[InstalledHeader],
 ) -> Result<Manifest> {
@@ -316,7 +352,7 @@ fn collect(
     let mut generated = BTreeSet::new();
 
     for command in commands {
-        let Dependency::Tree(source) = Dependency::classify(&command.source) else {
+        let Location::Tree(source) = tree.classify(&command.source) else {
             // ビルド中に生成した `.c` をコンパイルする構成がある。バイナリを C の
             // 配列に変換して埋め込むもので、`ffbuild/common.mak` の `RUN_BIN2C` を
             // 使う規則がこれに当たる。CUDA のフィルタ（`*.ptx.c`）、Vulkan の
@@ -341,10 +377,10 @@ fn collect(
             .map_err(|error| format!("{} を読めません: {error}", depfile_path.display()))?;
 
         for dependency in depfile::parse_dependencies(&depfile)? {
-            match Dependency::classify(&dependency) {
-                Dependency::Tree(path) => tree_dependencies.insert(path),
-                Dependency::Generated(path) => generated.insert(path),
-                Dependency::External => false,
+            match tree.classify(&dependency) {
+                Location::Tree(path) => tree_dependencies.insert(path),
+                Location::Generated(path) => generated.insert(path),
+                Location::External => false,
             };
         }
     }
@@ -359,22 +395,18 @@ fn collect(
     let include_dirs = flags
         .include_dirs
         .iter()
-        .map(|raw| IncludeDir::classify(raw, &paths.ffmpeg_src))
+        .map(|raw| IncludeDir::classify(raw, tree))
         .collect::<Result<Vec<_>>>()?;
 
     let generated: Vec<String> = generated.into_iter().collect();
 
-    let public_headers = install_headers::select_public_headers(
-        installed_headers,
-        &paths.ffmpeg_src,
-        &headers,
-        &generated,
-    )?;
+    let public_headers =
+        install_headers::select_public_headers(installed_headers, tree, &headers, &generated)?;
 
     Ok(Manifest {
         ffmpeg_version: read_ffmpeg_version(paths)?,
         configure_args: CONFIGURE_ARGS.iter().map(|arg| (*arg).to_owned()).collect(),
-        host_arch: env::consts::ARCH.to_owned(),
+        host_arch: target_arch.to_owned(),
         host_os: env::consts::OS.to_owned(),
         c_standard: flags.std.ok_or("コンパイルコマンドに -std= がありません")?,
         defines: flags.defines,
@@ -385,35 +417,6 @@ fn collect(
         generated,
         public_headers,
     })
-}
-
-/// 依存関係ファイルやコンパイルコマンドに書かれたパスが、どこのファイルかを表す。
-enum Dependency {
-    /// FFmpeg のツリーにあるファイル。ツリーからの相対パス。
-    Tree(String),
-
-    /// `configure` や `make` が生成したファイル。ビルドディレクトリからの相対パス。
-    Generated(String),
-
-    /// どちらでもないファイル。システムのヘッダや SDK の設定ファイルなど。
-    External,
-}
-
-impl Dependency {
-    fn classify(raw: &str) -> Self {
-        let path = Path::new(raw);
-
-        if path.is_absolute() {
-            return Self::External;
-        }
-
-        // ビルドディレクトリで `make` を実行しているので、相対パスはすべて
-        // ビルドディレクトリが起点。そのうち `src/` 以下がツリー内のファイル。
-        match path.strip_prefix(SOURCE_LINK) {
-            Ok(relative) => Self::Tree(to_slash_path(relative)),
-            Err(_) => Self::Generated(to_slash_path(path)),
-        }
-    }
 }
 
 /// 全翻訳単位のフラグが同じであることを確かめ、その共通のフラグを返す。
@@ -481,8 +484,9 @@ fn find_objects(root: &Path, dir: &Path, objects: &mut BTreeSet<String>) -> Resu
         let path = entry.path();
 
         // `DirEntry::file_type` による `is_dir` はシンボリックリンクを辿らない。
-        // ビルドディレクトリには FFmpeg のツリーを指す `src` というリンクがあり、
-        // 辿るとツリー全体を走査してしまうので、この性質に頼っている。
+        // リンクを作れる環境では、ビルドディレクトリに FFmpeg のツリーを指す
+        // `src` というリンクがあり、辿るとツリー全体を走査してしまうので、この
+        // 性質に頼っている。
         let file_type = entry.file_type()?;
 
         if file_type.is_dir() {

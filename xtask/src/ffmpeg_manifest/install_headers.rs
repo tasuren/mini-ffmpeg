@@ -18,9 +18,12 @@
 //! 実際にインストールはしない。`-n` はコマンドを表示するだけなので、何が
 //! 公開ヘッダかを、インストール先に何も書き込まずに知ることができる。
 
-use std::{collections::BTreeSet, path::Path};
+use std::collections::BTreeSet;
 
-use super::{SOURCE_LINK, compile_command::split_shell_words, manifest::to_slash_path};
+use super::{
+    compile_command::split_shell_words,
+    source_tree::{Location, SourceTree},
+};
 use crate::Result;
 
 /// インストールされるヘッダ 1 つ。
@@ -43,42 +46,6 @@ impl InstalledHeader {
 
         format!("{}/{file_name}", self.library)
     }
-
-    /// インストール元の場所を、ビルドマニフェストの `headers` や `generated` と同じ
-    /// 形のパスにする。
-    fn location(&self, ffmpeg_src: &Path) -> Result<Location> {
-        let path = Path::new(&self.source);
-
-        // ツリーのヘッダは、`configure` に渡した絶対パスで書かれる。
-        if path.is_absolute() {
-            let relative = path.strip_prefix(ffmpeg_src).map_err(|_| {
-                format!(
-                    "FFmpeg のツリーの外にある不明なヘッダが\
-                    インストールされる構成になってて、これは想定外です: {}",
-                    self.source,
-                )
-            })?;
-
-            return Ok(Location::Tree(to_slash_path(relative)));
-        }
-
-        // 相対パスは、`make` を実行したビルドディレクトリが起点。そのうち
-        // シンボリックリンクの `src/` 以下がツリーのファイルで、残りは生成物。
-        Ok(match path.strip_prefix(SOURCE_LINK) {
-            Ok(relative) => Location::Tree(to_slash_path(relative)),
-            Err(_) => Location::Generated(to_slash_path(path)),
-        })
-    }
-}
-
-/// インストール元のヘッダがある場所。
-#[derive(Debug, PartialEq, Eq)]
-enum Location {
-    /// FFmpeg のツリー。ツリーからの相対パス。
-    Tree(String),
-
-    /// `configure` や `make` の生成物。ビルドディレクトリからの相対パス。
-    Generated(String),
 }
 
 /// コマンド 1 行を読み、ヘッダをインストールするコマンドであれば、その内容を返す。
@@ -175,7 +142,7 @@ pub fn parse_line(line: &str) -> Result<Vec<InstalledHeader>> {
 /// - 選んだ結果が空の場合。コマンドの形についての前提が外れている。
 pub fn select_public_headers(
     installed: &[InstalledHeader],
-    ffmpeg_src: &Path,
+    tree: &SourceTree,
     headers: &[String],
     generated: &[String],
 ) -> Result<Vec<String>> {
@@ -184,7 +151,9 @@ pub fn select_public_headers(
     for header in installed {
         let include_name = header.include_name();
 
-        let (path, used) = match header.location(ffmpeg_src)? {
+        // ツリーのヘッダは `SRC_PATH` の絶対パスで、生成物はビルドディレクトリ
+        // からの相対パスで書かれる。
+        let (path, used) = match tree.classify(&header.source) {
             Location::Tree(path) => {
                 let used = headers.contains(&path);
                 (path, used)
@@ -192,6 +161,14 @@ pub fn select_public_headers(
             Location::Generated(path) => {
                 let used = generated.contains(&path);
                 (path, used)
+            }
+            Location::External => {
+                return Err(format!(
+                    "FFmpeg のツリーの外にある不明なヘッダが\
+                    インストールされる構成になってて、これは想定外です: {}",
+                    header.source,
+                )
+                .into());
             }
         };
 
@@ -231,6 +208,10 @@ mod tests {
             source: source.to_owned(),
             library: library.to_owned(),
         }
+    }
+
+    fn tree() -> SourceTree {
+        SourceTree::new(&["src", "/work/FFmpeg"], &["/work/build"])
     }
 
     fn strings(values: &[&str]) -> Vec<String> {
@@ -297,7 +278,7 @@ mod tests {
 
         let public = select_public_headers(
             &installed,
-            Path::new("/work/FFmpeg"),
+            &tree(),
             &strings(&[
                 "libavcodec/avcodec.h",
                 "libavcodec/internal.h",
@@ -325,16 +306,14 @@ mod tests {
         let installed = [header("/work/FFmpeg/libavcodec/aac/aac.h", "libavcodec")];
         let headers = strings(&["libavcodec/aac/aac.h"]);
 
-        assert!(
-            select_public_headers(&installed, Path::new("/work/FFmpeg"), &headers, &[]).is_err()
-        );
+        assert!(select_public_headers(&installed, &tree(), &headers, &[]).is_err());
     }
 
     #[test]
     fn rejects_header_outside_ffmpeg_tree() {
         let installed = [header("/opt/include/libavutil/avutil.h", "libavutil")];
 
-        assert!(select_public_headers(&installed, Path::new("/work/FFmpeg"), &[], &[]).is_err());
+        assert!(select_public_headers(&installed, &tree(), &[], &[]).is_err());
     }
 
     /// 1 つも選べないのは、コマンドの読み取りの前提が外れたとき。空の一覧を
@@ -343,7 +322,7 @@ mod tests {
     fn rejects_empty_selection() {
         let installed = [header("/work/FFmpeg/libavcodec/d3d11va.h", "libavcodec")];
 
-        assert!(select_public_headers(&installed, Path::new("/work/FFmpeg"), &[], &[]).is_err());
-        assert!(select_public_headers(&[], Path::new("/work/FFmpeg"), &[], &[]).is_err());
+        assert!(select_public_headers(&installed, &tree(), &[], &[]).is_err());
+        assert!(select_public_headers(&[], &tree(), &[], &[]).is_err());
     }
 }
