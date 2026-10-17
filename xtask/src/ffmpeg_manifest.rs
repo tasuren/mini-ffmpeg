@@ -27,6 +27,7 @@ mod depfile;
 mod install_headers;
 mod manifest;
 mod source_tree;
+mod target_arch;
 
 use std::{
     collections::BTreeSet,
@@ -139,6 +140,7 @@ pub fn run() -> Result<()> {
     configure(&paths)?;
 
     let tree = SourceTree::read(&paths.build_dir, &paths.ffmpeg_src)?;
+    let target_arch = detect_target_arch(&paths)?;
 
     // 実際にビルドした後では、`make -n` は「やることが無い」としてコマンドを
     // 表示しない。必ずビルドの前に取得する。
@@ -149,7 +151,7 @@ pub fn run() -> Result<()> {
 
     let installed_headers = dry_run_installed_headers(&paths)?;
 
-    let manifest = collect(&paths, &tree, &commands, &installed_headers)?;
+    let manifest = collect(&paths, &tree, &target_arch, &commands, &installed_headers)?;
     write_outputs(&paths, &manifest)?;
 
     println!(
@@ -182,6 +184,28 @@ fn configure(paths: &Paths) -> Result<()> {
         )
         .into()
     })
+}
+
+/// `configure` が使うコンパイラの、ターゲットの CPU アーキテクチャを調べる。
+/// 方法は [`target_arch`] を参照。
+fn detect_target_arch(paths: &Paths) -> Result<String> {
+    fs::write(
+        paths.build_dir.join(target_arch::PROBE_SOURCE),
+        target_arch::PROBE,
+    )?;
+
+    let mut command = Command::new("make");
+    command
+        .args(["V=1", target_arch::PROBE_OUTPUT])
+        .current_dir(&paths.build_dir);
+
+    run_logged(command, &paths.build_dir.join("xtask-target-arch.log"))?;
+
+    let output_path = paths.build_dir.join(target_arch::PROBE_OUTPUT);
+    let output = fs::read_to_string(&output_path)
+        .map_err(|error| format!("{} を読めません: {error}", output_path.display()))?;
+
+    target_arch::parse_preprocessed(&output)
 }
 
 /// `make -n V=1` を実行し、表示されたコマンドから C のコンパイルコマンドを集める。
@@ -302,6 +326,7 @@ fn run_logged(mut command: Command, log_path: &Path) -> Result<()> {
 fn collect(
     paths: &Paths,
     tree: &SourceTree,
+    target_arch: &str,
     commands: &[CompileCommand],
     installed_headers: &[InstalledHeader],
 ) -> Result<Manifest> {
@@ -368,7 +393,7 @@ fn collect(
     Ok(Manifest {
         ffmpeg_version: read_ffmpeg_version(paths)?,
         configure_args: CONFIGURE_ARGS.iter().map(|arg| (*arg).to_owned()).collect(),
-        host_arch: env::consts::ARCH.to_owned(),
+        host_arch: target_arch.to_owned(),
         host_os: env::consts::OS.to_owned(),
         c_standard: flags.std.ok_or("コンパイルコマンドに -std= がありません")?,
         defines: flags.defines,

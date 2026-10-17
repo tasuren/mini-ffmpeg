@@ -20,9 +20,11 @@ pub struct Manifest {
     /// `configure` に渡した引数。
     pub configure_args: Vec<String>,
 
-    /// 生成を行ったマシンの CPU アーキテクチャと OS。
+    /// 生成を行った環境の CPU アーキテクチャと OS。
     ///
     /// `config.h` の内容は生成した環境に依存するので、どの環境のものかを残す。
+    /// アーキテクチャは、xtask 自身のものではなく、`configure` が使ったコンパイラの
+    /// ターゲットのもの。
     pub host_arch: String,
     pub host_os: String,
 
