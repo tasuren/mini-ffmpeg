@@ -11,7 +11,9 @@ use std::{
     process::{Command, Stdio},
 };
 
-use crate::{MANIFEST_FILE, Result, sys_crate_dir, workspace_root};
+use crate::{
+    BUILD_CONFIG_DIR, MANIFEST_FILE, Result, available_targets, sys_crate_dir, workspace_root,
+};
 
 const IMAGE: &str = "mini-ffmpeg-licensecheck:trixie";
 const DOCKERFILE: &str = "FROM debian:trixie-slim\n\
@@ -28,20 +30,27 @@ const SCAN_ARGS: &[&str] = &[
     "spdx",
 ];
 
-const HELP: &str = "使い方: cargo xtask ffmpeg-license [--docker | --native] [--output DIR]
+const HELP: &str =
+    "使い方: cargo xtask ffmpeg-license --target TRIPLE [--docker | --native] [--output DIR]
+
+--target は必須。mini-ffmpeg-sys/FFmpeg_build/ にある、ターゲットトリプルの構成を検査する。
+構成はターゲットごとに違い、検査結果もそのターゲットのものでしかない。ターゲットを
+省略して通ると、mini-ffmpeg 全体で使われうる入力の検査と誤解されるので、省略を許さない。
 
 Linux は PATH の licensecheck を直接実行し、それ以外の OS は Docker を使う。
 --docker / --native で実行方法を指定できる（自動フォールバックはしない）。
 Docker は Debian trixie の検査用イメージをビルドし、キャッシュして使う。
 初回はイメージとパッケージの取得にネットワークが必要。
 Linux の直接実行には licensecheck のインストールが必要（Debian: apt install licensecheck）。
-既定の出力先: target/xtask/ffmpeg-license（--output は作業ディレクトリ基準）。
+既定の出力先: target/xtask/ffmpeg-license/TRIPLE（--output は作業ディレクトリ基準）。
 出力: report.md、licensecheck.tsv、versions.txt、manifest.toml。
 検査対象はビルドマニフェストの sources 全体。システムヘッダと Cargo 依存は含まない。";
 
 /// 明示指定が無ければ、Linux だけローカルのツールを使う。
 #[derive(Debug)]
 struct Options {
+    /// 検査する構成のターゲットトリプル。
+    target: String,
     docker: bool,
     output: PathBuf,
 }
@@ -53,7 +62,8 @@ impl Options {
         }
 
         let mut mode = None;
-        let mut output = workspace_root()?.join("target/xtask/ffmpeg-license");
+        let mut target = None;
+        let mut output = None;
         let mut args = args.iter();
 
         while let Some(arg) = args.next() {
@@ -65,17 +75,60 @@ impl Options {
                     mode = Some(arg == "--docker");
                 }
                 "--output" => {
-                    output = PathBuf::from(args.next().ok_or("--output に DIR が必要です")?);
+                    output = Some(PathBuf::from(
+                        args.next().ok_or("--output に DIR が必要です")?,
+                    ));
+                }
+                "--target" => {
+                    target = Some(args.next().ok_or("--target に TRIPLE が必要です")?.clone());
                 }
                 _ => return Err(format!("未知の引数です: {arg}\n\n{HELP}").into()),
             }
         }
 
+        let target = target.ok_or_else(|| {
+            format!(
+                "--target が必要です。選べるターゲット: {}\n\n{HELP}",
+                available_targets()
+                    .map_or_else(|_| "（取得できません）".to_owned(), |t| t.join(", ")),
+            )
+        })?;
+
+        validate_target(&target)?;
+
+        // ターゲットごとに分ける。同じ場所に書くと、別のターゲットの結果を
+        // 上書きして、どのターゲットの検査かが分からなくなる。
+        let output = match output {
+            Some(output) => output,
+            None => workspace_root()?
+                .join("target/xtask/ffmpeg-license")
+                .join(&target),
+        };
+
         Ok(Some(Self {
+            target,
             docker: mode.unwrap_or(!cfg!(target_os = "linux")),
             output,
         }))
     }
+}
+
+/// `--target` の値が、ディレクトリ名として安全なトリプルであることを確かめる。
+///
+/// 値はそのままパスに連結するので、`..` や区切り文字を含むものを通すと、
+/// 構成の外のファイルを検査対象にできてしまう。
+fn validate_target(target: &str) -> Result<()> {
+    let plain = !target.is_empty()
+        && target
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        && !target.starts_with('.');
+
+    if !plain {
+        return Err(format!("不正なターゲットです: {target:?}").into());
+    }
+
+    Ok(())
 }
 
 /// 検査完了と入力集合の一致を確認してから、結果を出力する。
@@ -86,8 +139,17 @@ pub fn run(args: &[String]) -> Result<()> {
     };
 
     let root = sys_crate_dir()?;
-    let manifest = fs::read_to_string(root.join(MANIFEST_FILE))?;
-    let inputs = inputs(&manifest)?;
+    let generated_dir = format!("{BUILD_CONFIG_DIR}/{}", options.target);
+    let manifest_path = root.join(&generated_dir).join(MANIFEST_FILE);
+
+    let manifest = fs::read_to_string(&manifest_path).map_err(|error| {
+        format!(
+            "{} を読めません: {error}\n選べるターゲット: {}",
+            manifest_path.display(),
+            available_targets().map_or_else(|_| "（取得できません）".to_owned(), |t| t.join(", ")),
+        )
+    })?;
+    let inputs = inputs(&manifest, &generated_dir)?;
 
     for path in inputs.keys() {
         if !root.join(path).is_file() {
@@ -101,7 +163,7 @@ pub fn run(args: &[String]) -> Result<()> {
         native_scan(&root, &inputs)?
     };
     let rows = validate_scan(&scan, &inputs)?;
-    let report = report(&rows, &inputs, &versions, options.docker);
+    let report = report(&rows, &inputs, &versions, &options);
 
     fs::create_dir_all(&options.output)?;
     fs::write(options.output.join("manifest.toml"), manifest)?;
@@ -118,7 +180,10 @@ pub fn run(args: &[String]) -> Result<()> {
 }
 
 /// ビルドマニフェストの分類を保持しつつ、クレート基準のパスで重複を除く。
-fn inputs(manifest: &str) -> Result<BTreeMap<String, String>> {
+///
+/// 生成物のパスの基準は `generated_dir`（クレートからの相対パスで、
+/// `FFmpeg_build/<トリプル>` の形）。
+fn inputs(manifest: &str, generated_dir: &str) -> Result<BTreeMap<String, String>> {
     let table: toml::Table = manifest.parse()?;
     let sources = table
         .get("sources")
@@ -137,7 +202,7 @@ fn inputs(manifest: &str) -> Result<BTreeMap<String, String>> {
             .and_then(toml::Value::as_array)
             .ok_or_else(|| format!("sources.{category} の配列がありません"))?;
         let prefix = if category == "generated" {
-            "FFmpeg_generated"
+            generated_dir
         } else {
             "FFmpeg"
         };
@@ -290,15 +355,16 @@ fn report(
     rows: &BTreeMap<&str, (&str, &str)>,
     inputs: &BTreeMap<String, String>,
     versions: &str,
-    docker: bool,
+    options: &Options,
 ) -> String {
     let mut groups: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for (path, (license, _)) in rows {
         groups.entry(license).or_default().push(path);
     }
     let mut out = format!(
-        "# FFmpeg licensecheck report\n\n実行方法: {}。対象: {} ファイル。\n\nビルドマニフェストの sources（翻訳単位・include 専用ソース・ヘッダ・生成物）を全文検査。\nシステムヘッダ、cinrs / Cargo 依存、ビルドマニフェスト外のファイルは対象外。\nプリプロセッサの分岐や最終バイナリへの到達性は判定しない。\n\nUNKNOWN はライセンス不適用を意味しない。IJG の表示も UNKNOWN になる場合がある。\nand/or は検出ツールの出力であり、選択可能なライセンスや確定した SPDX 式を意味しない。\n\n検査オプション: `{}`\n\n## ツールのバージョン\n\n```text\n{}\n```\n\n## 集計\n\n| 検出値 | ファイル数 |\n| --- | ---: |\n",
-        if docker {
+        "# FFmpeg licensecheck report\n\nターゲット: {}。実行方法: {}。対象: {} ファイル。\n\nビルドマニフェストの sources（翻訳単位・include 専用ソース・ヘッダ・生成物）を全文検査。\nシステムヘッダ、cinrs / Cargo 依存、ビルドマニフェスト外のファイルは対象外。\nプリプロセッサの分岐や最終バイナリへの到達性は判定しない。\n\nUNKNOWN はライセンス不適用を意味しない。IJG の表示も UNKNOWN になる場合がある。\nand/or は検出ツールの出力であり、選択可能なライセンスや確定した SPDX 式を意味しない。\n\n検査オプション: `{}`\n\n## ツールのバージョン\n\n```text\n{}\n```\n\n## 集計\n\n| 検出値 | ファイル数 |\n| --- | ---: |\n",
+        options.target,
+        if options.docker {
             "Docker / Debian trixie"
         } else {
             "native"
@@ -328,6 +394,8 @@ fn report(
 mod tests {
     use super::*;
 
+    const GENERATED: &str = "FFmpeg_build/aarch64-apple-darwin";
+
     fn manifest(path: &str) -> String {
         format!(
             "[sources]\ntranslation_units = [{path:?}]\nincluded_sources = []\nheaders = []\ngenerated = [\"config.h\"]\n"
@@ -338,18 +406,31 @@ mod tests {
     #[test]
     fn rejects_paths_outside_scan_roots() {
         for path in ["../foo.c", "/foo.c", "C:/foo.c", "a\\b.c", "a\nb.c"] {
-            assert!(inputs(&manifest(path)).is_err(), "{path:?}");
+            assert!(inputs(&manifest(path), GENERATED).is_err(), "{path:?}");
         }
-        let inputs = inputs(&manifest("dir/a b.c")).unwrap();
+        let inputs = inputs(&manifest("dir/a b.c"), GENERATED).unwrap();
         assert_eq!(inputs["FFmpeg/dir/a b.c"], "translation_units");
-        assert_eq!(inputs["FFmpeg_generated/config.h"], "generated");
+        assert_eq!(
+            inputs["FFmpeg_build/aarch64-apple-darwin/config.h"],
+            "generated"
+        );
+    }
+
+    /// `--target` はパスに連結される。構成の外を指す値を通さないこと。
+    #[test]
+    fn rejects_unsafe_targets() {
+        for target in ["", ".", "..", "../x", "a/b", "a\\b", ".hidden", "a b"] {
+            assert!(validate_target(target).is_err(), "{target:?}");
+        }
+
+        assert!(validate_target("aarch64-apple-darwin").is_ok());
     }
 
     /// 終了コードが成功でも、検査漏れや余分な対象を黙って受け入れない。
     #[test]
     fn rejects_incomplete_duplicate_or_unexpected_results() {
-        let inputs = inputs(&manifest("a.c")).unwrap();
-        let scan = "FFmpeg/a.c\tUNKNOWN\t*No copyright*\nFFmpeg_generated/config.h\tUNKNOWN\t*No copyright*\n";
+        let inputs = inputs(&manifest("a.c"), GENERATED).unwrap();
+        let scan = "FFmpeg/a.c\tUNKNOWN\t*No copyright*\nFFmpeg_build/aarch64-apple-darwin/config.h\tUNKNOWN\t*No copyright*\n";
         assert_eq!(validate_scan(scan, &inputs).unwrap().len(), 2);
         assert!(validate_scan(scan.lines().next().unwrap(), &inputs).is_err());
         assert!(validate_scan(&format!("{scan}{scan}"), &inputs).is_err());

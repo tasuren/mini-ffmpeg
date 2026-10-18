@@ -92,13 +92,14 @@ cargo run -p remux-spike -- input.wav output.wav
 
 ## FFmpeg 入力のライセンス検査
 
-`cinrs_manifest.toml` に列挙された C ソース、ヘッダ、`FFmpeg_generated/` の
-ファイルを、`licensecheck` で全文検査できます。
+`mini-ffmpeg-sys/FFmpeg_build/<ターゲットトリプル>/cinrs_manifest.toml` に列挙された
+C ソース、ヘッダ、同じディレクトリの生成物を、`licensecheck` で全文検査できます。
+構成はターゲットごとに違うので、`--target` でどのターゲットの構成かを必ず指定します。
 
 ```sh
-cargo xtask ffmpeg-license
-cargo xtask ffmpeg-license --docker
-cargo xtask ffmpeg-license --native --output target/license-report
+cargo xtask ffmpeg-license --target aarch64-apple-darwin
+cargo xtask ffmpeg-license --target aarch64-apple-darwin --docker
+cargo xtask ffmpeg-license --target aarch64-apple-darwin --native --output target/license-report
 ```
 
 Linux では PATH にある `licensecheck` を直接実行します。Debian なら
@@ -107,7 +108,7 @@ Debian trixie の検査用イメージを初回にビルドします。その後
 ビルドキャッシュを使います。`--docker` と `--native` で実行方法を指定できます。
 この検査に C コンパイラや FFmpeg の再ビルドは必要ありません。
 
-既定の出力先は `target/xtask/ffmpeg-license/` です。
+既定の出力先は `target/xtask/ffmpeg-license/<ターゲットトリプル>/` です。
 `report.md` に検出値ごとの集計・全ファイル一覧とツールのバージョン、
 `licensecheck.tsv` にファイルごとの検出値と著作権表示を保存します。
 `versions.txt` と、検査に使ったビルドマニフェストのコピー `manifest.toml` も残します。
