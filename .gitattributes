@@ -1,0 +1,8 @@
+# `cargo xtask ffmpeg-manifest` が生成するターゲットごとのビルド構成。
+# GitHub の差分で、デフォルトで折りたたむ。config.h などは数千行あり、
+# 手で読む対象ではない。
+mini-ffmpeg-sys/FFmpeg_build/** linguist-generated=true
+
+# ビルドマニフェストは、対象のターゲットや翻訳単位の増減など、レビューで見たい
+# 変更を含むので、折りたたまない。
+mini-ffmpeg-sys/FFmpeg_build/*/cinrs_manifest.toml -linguist-generated
