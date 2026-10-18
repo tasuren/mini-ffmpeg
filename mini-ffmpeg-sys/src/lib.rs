@@ -29,10 +29,11 @@
 //! 変換の入力で、ビルドスクリプトが読む。
 //!
 //! - `FFmpeg/`: FFmpeg のツリー。Git のサブモジュール。
-//! - `FFmpeg_generated/`: FFmpeg の `configure` と `make` が生成したファイル。
-//! - `cinrs_manifest.toml`: ビルドマニフェスト。FFmpeg を一度ビルドして読み取った内容を記したもの。
+//! - `FFmpeg_build/<ターゲットトリプル>/`: ターゲットごとのビルド構成。
+//!   - `cinrs_manifest.toml`: ビルドマニフェスト。FFmpeg を一度ビルドして読み取った内容を記したもの。
+//!   - それ以外: FFmpeg の `configure` と `make` が生成したファイル。
 //!
-//! 後ろの 2 つは `cargo xtask ffmpeg-manifest` の生成物で、手では編集しない。
+//! `FFmpeg_build/` は `cargo xtask ffmpeg-manifest` の生成物で、手では編集しない。
 
 // ビルドスクリプトが書き出した、モジュールの宣言。公開の API のモジュールと、
 // その再エクスポート（`pub use public_api::*;`）に続けて、`pub mod libavutil { … }` の

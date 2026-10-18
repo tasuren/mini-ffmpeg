@@ -21,9 +21,14 @@ use std::{
 /// 文字列ベースで扱う。
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-/// ビルドマニフェスト。`mini-ffmpeg-sys` からの相対パス。
+/// ターゲットごとのビルド構成を置くディレクトリ。`mini-ffmpeg-sys` からの相対パス。
 ///
-/// `ffmpeg-manifest` が書き出し、`mini-ffmpeg-sys` の `build.rs` が読む。
+/// 構成は `FFmpeg_build/<ターゲットトリプル>/` に置く。その中身は、ビルドマニフェスト
+/// （[`MANIFEST_FILE`]）と、`configure` と `make` の生成物。`ffmpeg-manifest` が
+/// 書き出し、`mini-ffmpeg-sys` の `build.rs` が読む。
+const BUILD_CONFIG_DIR: &str = "FFmpeg_build";
+
+/// ビルドマニフェスト。ターゲットごとの構成のディレクトリからの相対パス。
 const MANIFEST_FILE: &str = "cinrs_manifest.toml";
 
 const USAGE: &str = "\
@@ -31,7 +36,8 @@ const USAGE: &str = "\
 
 タスク:
   ffmpeg-manifest  FFmpeg を最小構成でビルドし、ビルドマニフェストと
-                   生成された設定ファイルを mini-ffmpeg-sys に書き出す
+                   生成された設定ファイルを、実行したマシンのターゲットの
+                   ディレクトリ（mini-ffmpeg-sys/FFmpeg_build/<トリプル>）に書き出す
   ffmpeg-license   ビルドマニフェストの入力ファイルを licensecheck で検査する
                    オプションは cargo xtask ffmpeg-license --help を参照
 
@@ -49,6 +55,26 @@ fn workspace_root() -> Result<&'static Path> {
 /// `mini-ffmpeg-sys` クレートのディレクトリ。タスクの結果は、この中に書き出す。
 fn sys_crate_dir() -> Result<PathBuf> {
     Ok(workspace_root()?.join("mini-ffmpeg-sys"))
+}
+
+/// 取り込み済みのターゲットトリプルを、名前の順に返す。
+///
+/// `FFmpeg_build/` の直下にあるディレクトリの名前。エラー文で、選べる値を
+/// 示すのに使う。
+fn available_targets() -> Result<Vec<String>> {
+    let mut targets = Vec::new();
+
+    for entry in std::fs::read_dir(sys_crate_dir()?.join(BUILD_CONFIG_DIR))? {
+        let entry = entry?;
+
+        if entry.file_type()?.is_dir() {
+            targets.push(entry.file_name().to_string_lossy().into_owned());
+        }
+    }
+
+    targets.sort();
+
+    Ok(targets)
 }
 
 fn main() -> ExitCode {

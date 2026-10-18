@@ -8,20 +8,23 @@ use std::ffi::CStr;
 
 use mini_ffmpeg_sys::libavutil::version;
 
-/// `cinrs_manifest.toml` の `[ffmpeg]` にある `version` の値を取り出す。
+/// ビルドマニフェストの `[ffmpeg]` にある `version` の値を取り出す。
 ///
 /// 期待値をテストに直接書くと、FFmpeg のバージョンを上げるたびに書き換えが
 /// 必要になる。ツールが同じビルドから読み取った値と突き合わせる。
+///
+/// ビルドマニフェストはターゲットごとに別の場所にあるので、パスはビルド
+/// スクリプトが `rustc-env` で渡したものを使う。
 fn manifest_ffmpeg_version() -> &'static str {
-    include_str!("../cinrs_manifest.toml")
+    include_str!(env!("MINI_FFMPEG_SYS_MANIFEST"))
         .lines()
         .find_map(|line| line.strip_prefix("version = "))
-        .expect("cinrs_manifest.toml に version がある")
+        .expect("ビルドマニフェストに version がある")
         .trim_matches('"')
 }
 
 /// `FFMPEG_VERSION` は `make` が生成した `libavutil/ffversion.h` にある。
-/// この値が返るなら、変換のときに `FFmpeg_generated` をインクルード
+/// この値が返るなら、変換のときに `FFmpeg_build/<ターゲット>` をインクルード
 /// ディレクトリとして読めていて、C の関数を Rust から呼べている。
 #[test]
 fn av_version_info_returns_ffversion_h_value() {

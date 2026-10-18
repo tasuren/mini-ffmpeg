@@ -24,32 +24,23 @@ use std::{
 extern crate mini_ffmpeg_sys as _;
 
 mod remux_c {
-    // マクロの中で、C コンパイラのオプションに当たる指定を再現してから、`.c` を
-    // 丸ごと include している。FFmpeg のソースには手を加えていない。
+    // マクロの呼び出しは、ビルドスクリプトが `OUT_DIR` に書き出している。FFmpeg の
+    // 生成物がターゲットごとのディレクトリにあり、そのパスをマクロに書くには、
+    // ターゲットを知っている必要があるため。書き出す内容は次の通りで、C コンパイラの
+    // オプションに当たる指定を再現してから、`.c` を丸ごと include している。
+    // FFmpeg のソースには手を加えていない。
     //
     // - `#pragma cinrs export` を付けない。ここの関数は Rust から呼ぶだけで、
     //   他の翻訳単位から参照されない。
     // - `#pragma cinrs system_include first` で、プラットフォームのヘッダを
     //   cinrs 同梱のヘッダより先に探させる。FFmpeg 本体の変換と同じ指定。
-    // - プラットフォーム用の回避策のヘッダを、プラットフォームのヘッダより前に
-    //   読む。隣の `cinrs_platform_fixups.h` で、cinrs は `.rs` ファイルの場所を
-    //   最初に探す。
+    // - プラットフォーム用の回避策のヘッダ（隣の `cinrs_platform_fixups.h`）を、
+    //   プラットフォームのヘッダより前に読む。
     // - `HAVE_AV_CONFIG_H` などを定義しない。`remux.c` は FFmpeg を使う側の
     //   プログラムで、公開のヘッダだけを include する。
     // - `main` を別の名前に変える。Rust のプログラムの入口と衝突させず、普通の
     //   関数として呼べるようにするため。
-    cinrs::c17! {
-        #pragma cinrs system_include first
-
-        #include "cinrs_platform_fixups.h"
-
-        #pragma cinrs include_path "../mini-ffmpeg-sys/FFmpeg_generated"
-        #pragma cinrs include_path "../mini-ffmpeg-sys/FFmpeg"
-
-        #define main remux_main
-
-        #include "doc/examples/remux.c"
-    }
+    include!(concat!(env!("OUT_DIR"), "/remux_c.rs"));
 }
 
 /// `remux.c` の `main` を呼び、`input` のストリームを再エンコードせずに `output` へ

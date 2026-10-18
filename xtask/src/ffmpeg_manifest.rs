@@ -13,7 +13,11 @@
 //! 4. `make -n install-headers` で、FFmpeg が公開の API としてインストールする
 //!    ヘッダを得る。そのうち、翻訳単位が include したものを公開ヘッダとする。
 //! 5. ビルドマニフェストを `cinrs_manifest.toml` に書き出し、`configure` と `make` の生成物の
-//!    うち必要なものを `FFmpeg_generated/` にコピーする。
+//!    うち必要なものを、同じ `FFmpeg_build/<トリプル>/` にコピーする。
+//!
+//! 書き出す先は、実行したマシンの `rustc` のホストのトリプルで決まる（[`triple`]）。
+//! `configure` の結果はそのマシンを調べたものなので、別のターゲットの構成は、
+//! そのターゲットのマシンで実行して作る。
 //!
 //! 読み書きする場所は、すべて `mini-ffmpeg-sys` の中にある。FFmpeg のツリーは
 //! サブモジュールの `FFmpeg/`。クレートのディレクトリの中に揃えているのは、
@@ -28,6 +32,7 @@ mod install_headers;
 mod manifest;
 mod source_tree;
 mod target_arch;
+mod triple;
 
 use std::{
     collections::BTreeSet,
@@ -44,7 +49,7 @@ use self::{
     manifest::{IncludeDir, Manifest, to_slash_path},
     source_tree::{Location, SourceTree},
 };
-use crate::{MANIFEST_FILE, Result, sys_crate_dir, workspace_root};
+use crate::{BUILD_CONFIG_DIR, MANIFEST_FILE, Result, sys_crate_dir, workspace_root};
 
 /// `configure` に渡す引数。取り込む FFmpeg の構成は、ここが唯一の定義になる。
 const CONFIGURE_ARGS: &[&str] = &[
@@ -85,12 +90,6 @@ const CONFIGURE_ARGS: &[&str] = &[
 /// FFmpeg のツリー（サブモジュール）。`mini-ffmpeg-sys` からの相対パス。
 const FFMPEG_DIR: &str = "FFmpeg";
 
-/// `configure` と `make` の生成物のコピー先。`mini-ffmpeg-sys` からの相対パス。
-///
-/// このタスクが丸ごと管理するディレクトリで、実行のたびに作り直す。手で
-/// ファイルを置いても消える。
-const GENERATED_DIR: &str = "FFmpeg_generated";
-
 /// このタスクが読み書きする場所。
 struct Paths {
     /// FFmpeg のツリー。シンボリックリンクを解決した絶対パス。
@@ -99,8 +98,14 @@ struct Paths {
     /// `configure` と `make` を実行する、ツリーの外のディレクトリ。
     build_dir: PathBuf,
 
-    /// `mini-ffmpeg-sys` クレートのディレクトリ。結果はこの中に書き出す。
-    sys_crate: PathBuf,
+    /// 構成の名前になる、`rustc` のホストのトリプル。
+    triple: String,
+
+    /// 結果の書き出し先（`mini-ffmpeg-sys/FFmpeg_build/<トリプル>`）。
+    ///
+    /// このタスクが丸ごと管理するディレクトリで、実行のたびに作り直す。手で
+    /// ファイルを置いても消える。他のトリプルのディレクトリには触れない。
+    output_dir: PathBuf,
 }
 
 impl Paths {
@@ -117,6 +122,8 @@ impl Paths {
             .into());
         }
 
+        let triple = triple::host_triple()?;
+
         Ok(Self {
             // `configure` には絶対パスで渡す。コンパイルコマンドに現れる
             // インクルードディレクトリが同じ絶対パスで書かれるので、後で
@@ -126,7 +133,8 @@ impl Paths {
             // `/target` は gitignore されているので、ビルドの中間生成物を置ける。
             build_dir: workspace_root()?.join("target/xtask/ffmpeg-build"),
 
-            sys_crate,
+            output_dir: sys_crate.join(BUILD_CONFIG_DIR).join(&triple),
+            triple,
         })
     }
 }
@@ -148,6 +156,9 @@ pub fn run() -> Result<()> {
     let tree = SourceTree::read(&paths.build_dir, &paths.ffmpeg_src)?;
     let target_arch = detect_target_arch(&paths)?;
 
+    // 構成を保存する前に、トリプルの名前と中身が食い違わないことを確かめる。
+    triple::check_arch_matches(&paths.triple, &target_arch)?;
+
     // 実際にビルドした後では、`make -n` は「やることが無い」としてコマンドを
     // 表示しない。必ずビルドの前に取得する。
     let commands = dry_run_compile_commands(&paths)?;
@@ -165,7 +176,7 @@ pub fn run() -> Result<()> {
          FFmpeg {}\n  \
          翻訳単位 {} 個、include されるだけのソース {} 個、ヘッダ {} 個、生成物 {} 個\n  \
          公開ヘッダ {} 個（インストールされる {} 個のうち、翻訳単位が include したもの）",
-        paths.sys_crate.display(),
+        paths.output_dir.display(),
         manifest.ffmpeg_version,
         manifest.translation_units.len(),
         manifest.included_sources.len(),
@@ -405,6 +416,7 @@ fn collect(
 
     Ok(Manifest {
         ffmpeg_version: read_ffmpeg_version(paths)?,
+        generated_dir: format!("{BUILD_CONFIG_DIR}/{}", paths.triple),
         configure_args: CONFIGURE_ARGS.iter().map(|arg| (*arg).to_owned()).collect(),
         host_arch: target_arch.to_owned(),
         host_os: env::consts::OS.to_owned(),
@@ -520,16 +532,18 @@ fn read_ffmpeg_version(paths: &Paths) -> Result<String> {
 }
 
 fn write_outputs(paths: &Paths, manifest: &Manifest) -> Result<()> {
-    let generated_dir = paths.sys_crate.join(GENERATED_DIR);
+    let output_dir = &paths.output_dir;
 
     // 構成を変えると、不要になる生成物が出る。古いファイルを残さないよう、
     // このタスクが管理するディレクトリごと作り直す。
-    if generated_dir.exists() {
-        fs::remove_dir_all(&generated_dir)?;
+    if output_dir.exists() {
+        fs::remove_dir_all(output_dir)?;
     }
 
+    fs::create_dir_all(output_dir)?;
+
     for generated in &manifest.generated {
-        let destination = generated_dir.join(generated);
+        let destination = output_dir.join(generated);
 
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
@@ -541,7 +555,7 @@ fn write_outputs(paths: &Paths, manifest: &Manifest) -> Result<()> {
         fs::copy(paths.build_dir.join(generated), &destination)?;
     }
 
-    fs::write(paths.sys_crate.join(MANIFEST_FILE), manifest.to_toml())?;
+    fs::write(output_dir.join(MANIFEST_FILE), manifest.to_toml())?;
 
     Ok(())
 }

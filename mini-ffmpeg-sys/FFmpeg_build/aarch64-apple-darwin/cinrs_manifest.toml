@@ -17,7 +17,7 @@ configure_args = [
     "--enable-protocol=file,pipe",
 ]
 
-# 生成を行った環境。`FFmpeg_generated/` の内容はこの環境に依存する。
+# 生成を行った環境。このファイルと同じディレクトリの内容はこの環境に依存する。
 [host]
 arch = "aarch64"
 os = "macos"
@@ -36,7 +36,7 @@ defines = [
 # 探索する順。`mini-ffmpeg-sys` のルートからの相対パスで、
 # `#pragma cinrs include_path` にそのまま書ける。
 include_dirs = [
-    "FFmpeg_generated",
+    "FFmpeg_build/aarch64-apple-darwin",
     "FFmpeg",
     "FFmpeg/compat/dispatch_semaphore",
     "FFmpeg/compat/stdbit",
@@ -468,7 +468,7 @@ headers = [
 ]
 
 # 翻訳単位が include する、`configure` と `make` の生成物。
-# `FFmpeg_generated/` からの相対パス。
+# このファイルのあるディレクトリからの相対パス。
 generated = [
     "config.h",
     "config_components.h",

@@ -3,7 +3,7 @@
 use std::{fmt::Write as _, path::Path};
 
 use super::{
-    FFMPEG_DIR, GENERATED_DIR,
+    FFMPEG_DIR,
     source_tree::{Location, SourceTree},
 };
 use crate::Result;
@@ -16,6 +16,10 @@ use crate::Result;
 pub struct Manifest {
     /// `libavutil/ffversion.h` の `FFMPEG_VERSION`。
     pub ffmpeg_version: String,
+
+    /// 生成物を置いたディレクトリ。`mini-ffmpeg-sys` からの相対パスで、
+    /// `FFmpeg_build/<トリプル>` の形。ビルドマニフェスト自身もここに置かれる。
+    pub generated_dir: String,
 
     /// `configure` に渡した引数。
     pub configure_args: Vec<String>,
@@ -48,7 +52,7 @@ pub struct Manifest {
     pub headers: Vec<String>,
 
     /// 翻訳単位が include する、`configure` と `make` の生成物。
-    /// ビルドディレクトリからの相対パスで、`FFmpeg_generated/` 以下に同じパスで
+    /// ビルドディレクトリからの相対パスで、[`Manifest::generated_dir`] 以下に同じパスで
     /// コピーされる。
     pub generated: Vec<String>,
 
@@ -63,7 +67,7 @@ pub struct Manifest {
 /// インクルードディレクトリが、どこを起点にしたパスかを表す。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IncludeRoot {
-    /// `configure` と `make` の生成物を置いたディレクトリ（`FFmpeg_generated/`）。
+    /// `configure` と `make` の生成物を置いたディレクトリ（[`Manifest::generated_dir`]）。
     Generated,
 
     /// FFmpeg のツリーのルート（`FFmpeg/`）。
@@ -100,14 +104,15 @@ impl IncludeDir {
         }
     }
 
-    /// `mini-ffmpeg-sys` のルートからの相対パスにする。
+    /// `mini-ffmpeg-sys` のルートからの相対パスにする。`generated_dir` は、
+    /// [`Manifest::generated_dir`]。
     ///
     /// cinrs の `#pragma cinrs include_path` は、相対パスをクレートのルートを
     /// 起点に解決する。どちらの起点もクレートの中にあるので、この形にしておけば、
     /// 取り込みのコードにそのまま書ける。
-    pub fn crate_relative(&self) -> String {
+    pub fn crate_relative(&self, generated_dir: &str) -> String {
         let root = match self.root {
-            IncludeRoot::Generated => GENERATED_DIR,
+            IncludeRoot::Generated => generated_dir,
             IncludeRoot::Ffmpeg => FFMPEG_DIR,
         };
 
@@ -157,7 +162,7 @@ impl Manifest {
         write_array(&mut out, "configure_args", &self.configure_args);
 
         out.push_str(
-            "\n# 生成を行った環境。`FFmpeg_generated/` の内容はこの環境に依存する。\n[host]\n",
+            "\n# 生成を行った環境。このファイルと同じディレクトリの内容はこの環境に依存する。\n[host]\n",
         );
         write_string(&mut out, "arch", &self.host_arch);
         write_string(&mut out, "os", &self.host_os);
@@ -169,7 +174,7 @@ impl Manifest {
         let include_dirs: Vec<String> = self
             .include_dirs
             .iter()
-            .map(IncludeDir::crate_relative)
+            .map(|dir| dir.crate_relative(&self.generated_dir))
             .collect();
 
         out.push_str(
@@ -191,7 +196,7 @@ impl Manifest {
 
         out.push_str(
             "\n# 翻訳単位が include する、`configure` と `make` の生成物。\n\
-             # `FFmpeg_generated/` からの相対パス。\n",
+             # このファイルのあるディレクトリからの相対パス。\n",
         );
         write_array(&mut out, "generated", &self.generated);
 
@@ -313,10 +318,12 @@ mod tests {
     /// 付けないこと。
     #[test]
     fn renders_include_dir_relative_to_crate_root() {
-        assert_eq!(classify(".").crate_relative(), "FFmpeg_generated");
-        assert_eq!(classify("src/").crate_relative(), "FFmpeg");
+        let generated = "FFmpeg_build/aarch64-apple-darwin";
+
+        assert_eq!(classify(".").crate_relative(generated), generated);
+        assert_eq!(classify("src/").crate_relative(generated), "FFmpeg");
         assert_eq!(
-            classify("/work/FFmpeg/compat/stdbit").crate_relative(),
+            classify("/work/FFmpeg/compat/stdbit").crate_relative(generated),
             "FFmpeg/compat/stdbit",
         );
     }

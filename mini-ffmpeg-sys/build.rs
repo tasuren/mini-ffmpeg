@@ -1,6 +1,6 @@
 //! FFmpeg の C のコードを、cinrs で Rust のコードに変換する。
 //!
-//! ビルドマニフェスト（`cinrs_manifest.toml`）の翻訳単位を 1 つずつ変換し、Cargo が用意する
+//! ビルドマニフェスト（`FFmpeg_build/<ターゲット>/cinrs_manifest.toml`）の翻訳単位を 1 つずつ変換し、Cargo が用意する
 //! 出力用のディレクトリ（`OUT_DIR`）に書き出す。`src/lib.rs` が、それを読み込む。
 //!
 //! - `<ライブラリ>/<名前>.rs`: 翻訳単位 1 つを変換したもの。FFmpeg の関数と変数の
@@ -50,8 +50,19 @@ use self::translate::{Settings, Translated};
 /// エラーは表示して終了するだけなので、型を分けずに文字列で扱う。
 type Result<T> = std::result::Result<T, String>;
 
-/// ビルドマニフェスト。`cargo xtask ffmpeg-manifest` が書き出す。
+/// ターゲットごとのビルド構成を置くディレクトリ。`FFmpeg_build/<ターゲットトリプル>/` に、
+/// ビルドマニフェストと `configure` / `make` の生成物がある。
+const BUILD_CONFIG_DIR: &str = "FFmpeg_build";
+
+/// ビルドマニフェスト。ターゲットの構成のディレクトリの中にある。
+/// `cargo xtask ffmpeg-manifest` が書き出す。
 const MANIFEST_FILE: &str = "cinrs_manifest.toml";
+
+/// ビルドマニフェストのパスを、テストに伝える環境変数。
+///
+/// ビルドマニフェストはターゲットごとに別の場所にあり、`include_str!` に固定の
+/// パスを書けない。そのため、ビルドスクリプトが選んだパスを `rustc-env` で渡す。
+const MANIFEST_PATH_ENV: &str = "MINI_FFMPEG_SYS_MANIFEST";
 
 /// FFmpeg のツリー（サブモジュール）。
 const FFMPEG_DIR: &str = "FFmpeg";
@@ -113,7 +124,15 @@ fn main() -> ExitCode {
     // 最初に出力する。
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=build/translate.rs");
-    println!("cargo:rerun-if-changed={MANIFEST_FILE}");
+
+    // ビルドマニフェストはターゲットごとに別のファイルなので、今のターゲットのものを
+    // 指定する。無い場合も、置かれたときに再実行させるために指定する。
+    if let Ok(target) = env::var("TARGET") {
+        println!(
+            "cargo:rerun-if-changed={}",
+            manifest_path(&target).display()
+        );
+    }
 
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -138,11 +157,27 @@ fn run() -> Result<()> {
     // cinrs に絶対パスを渡すと困るが、`build.rs` では上記により問題ない。
     // 理由は `Settings::translate` の説明にある。
 
-    let manifest_text = fs::read_to_string(MANIFEST_FILE)
-        .map_err(|error| format!("{MANIFEST_FILE} を読めません: {error}"))?;
+    let target = cargo_env("TARGET")?;
+    let manifest_path = manifest_path(&target);
+
+    let manifest_text = fs::read_to_string(&manifest_path).map_err(|error| {
+        format!(
+            "{} を読めません: {error}\n\
+             {target} 向けの構成が取り込まれていない可能性があります。\
+             取り込み済みのターゲット: {}",
+            manifest_path.display(),
+            available_targets(),
+        )
+    })?;
     let manifest = Manifest::parse(&manifest_text)?;
 
-    let target = cargo_env("TARGET")?;
+    println!(
+        "cargo:rustc-env={MANIFEST_PATH_ENV}={}",
+        env::current_dir()
+            .map_err(|error| format!("作業ディレクトリを取得できません: {error}"))?
+            .join(&manifest_path)
+            .display(),
+    );
 
     check_target(&manifest, &target)?;
     require_ffmpeg_tree()?;
@@ -232,6 +267,30 @@ fn run() -> Result<()> {
     Ok(())
 }
 
+/// ターゲットのビルドマニフェストのパス。パッケージのルートからの相対パス。
+fn manifest_path(target: &str) -> PathBuf {
+    Path::new(BUILD_CONFIG_DIR).join(target).join(MANIFEST_FILE)
+}
+
+/// 取り込み済みのターゲットトリプルの一覧。エラー文に添えるための文字列。
+fn available_targets() -> String {
+    let mut targets: Vec<String> = fs::read_dir(BUILD_CONFIG_DIR)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+
+    targets.sort();
+
+    if targets.is_empty() {
+        "なし".to_owned()
+    } else {
+        targets.join(", ")
+    }
+}
+
 /// Cargo がビルドスクリプトに設定する環境変数を読む。
 fn cargo_env(name: &str) -> Result<String> {
     env::var(name).map_err(|error| format!("環境変数 {name} を読めません: {error}"))
@@ -307,7 +366,7 @@ fn string_array(table: &toml::Table, section: &str, key: &str) -> Result<Vec<Str
 /// 止める場合は 2 つある。どちらも、そのまま進むと、変換は通るのに動作が
 /// 食い違うか、プラットフォームのヘッダのエラーが大量に出て原因が分かりにくい。
 fn check_target(manifest: &Manifest, target: &str) -> Result<()> {
-    // `FFmpeg_generated/config.h` は、`configure` を実行したマシンを調べた結果で、
+    // `FFmpeg_build/<ターゲット>/config.h` は、`configure` を実行したマシンを調べた結果で、
     // 型の大きさや使える関数がそのマシンのものになっている。別のターゲットに
     // 使うと、FFmpeg が存在しない関数を呼んだり、違う分岐を選んだりする。
     let target_arch = cargo_env("CARGO_CFG_TARGET_ARCH")?;
@@ -318,7 +377,7 @@ fn check_target(manifest: &Manifest, target: &str) -> Result<()> {
     {
         return Err(format!(
             "mini-ffmpeg-sys は {target} 向けにビルドできません。\n\
-             取り込んでいる FFmpeg の構成（{MANIFEST_FILE} と FFmpeg_generated）は、\
+             取り込んでいる FFmpeg の構成（{BUILD_CONFIG_DIR}/{target}）は、\
              {} の {} 向けに生成したものです。",
             manifest.host_os, manifest.host_arch,
         ));

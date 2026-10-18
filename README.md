@@ -54,8 +54,8 @@ Rust で動作します。この `remux-spike` は FFmpeg の公式サンプル
   - `make` のコンパイルコマンドから、対象の `.c`・インクルードパス・マクロ定義
   - `make` が出力する `.d` から、include されるファイル
   - `make -n install-headers` から、公開ヘッダ
-- 抽出結果はビルドマニフェスト（`mini-ffmpeg-sys/cinrs_manifest.toml`）として
-  コミットしてあり、`configure`/`make` は FFmpeg 更新時かビルド設定変更時だけ
+- 抽出結果はビルドマニフェスト（`mini-ffmpeg-sys/FFmpeg_build/<ターゲットトリプル>/cinrs_manifest.toml`）
+  として、`configure` の生成物とともにコミットしてあり、`configure`/`make` は FFmpeg 更新時かビルド設定変更時だけ
   再実行すれば良い
 - `mini-ffmpeg-sys` のビルドスクリプトが、ビルドマニフェストを元に C を Rust に
   変換する

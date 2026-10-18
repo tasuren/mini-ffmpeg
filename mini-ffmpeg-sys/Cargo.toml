@@ -8,7 +8,7 @@ license = "LGPL-2.1-or-later AND BSD-3-Clause AND BSL-1.0 AND IJG AND ISC AND MI
 readme = "README.md"
 # FFmpeg のソースと生成物、ライセンスをクレートの配布にも含める。ビルドスクリプトが
 # FFmpeg のソースを読んで Rust に変換するので、ソースが無いとビルドできない。
-include = ["Cargo.toml", "build.rs", "build/**", "src/**", "tests/**", "cinrs_manifest.toml", "FFmpeg/**", "FFmpeg_generated/**", "LICENSE.ffmpeg", "README.md"]
+include = ["Cargo.toml", "build.rs", "build/**", "src/**", "tests/**", "FFmpeg/**", "FFmpeg_build/**", "LICENSE.ffmpeg", "README.md"]
 
 publish = false # まだ開発が終わっておらず確認したい項目がまだ残っている。
 
@@ -29,5 +29,5 @@ cinrs-core = "=0.3.0"
 # cinrs-core 自身が依存しているクレートで、依存の数は増えない。
 proc-macro2 = "1"
 
-# `cinrs_manifest.toml` の読み取り用。読み取りに要る機能だけを有効にしている。
+# ビルドマニフェスト（`FFmpeg_build/<ターゲット>/cinrs_manifest.toml`）の読み取り用。読み取りに要る機能だけを有効にしている。
 toml = { version = "1", default-features = false, features = ["parse", "serde", "std"] }
