@@ -147,10 +147,24 @@ fn strip_root<'a>(raw: &'a str, root: &str) -> Option<&'a str> {
     (same && (rest.is_empty() || rest.starts_with('/'))).then(|| rest.trim_start_matches('/'))
 }
 
-/// `/` で始まるパスも絶対パスとみなす。Windows の Rust は、ドライブ文字の無い
-/// `/home/...` を絶対パスとしないが、MSYS2 ではこれが絶対パスになる。
+/// `/` で始まるパスと、ドライブ文字で始まるパスも絶対パスとみなす。
+///
+/// Windows の Rust は、ドライブ文字の無い `/home/...` を絶対パスとしないが、
+/// MSYS2 ではこれが絶対パスになる。逆に、macOS や Linux の Rust は
+/// `C:/...` を絶対パスとしない。しかし、判定するのはコンパイラが書き出した
+/// 文字列で、どの OS で xtask を動かしているかとは関係なく決まるべきなので、
+/// ドライブ文字は文字列の形で見分ける。相対パスと取り違えると、システムの
+/// ヘッダが生成物として扱われる。
 fn is_absolute(raw: &str) -> bool {
-    raw.starts_with('/') || Path::new(raw).is_absolute()
+    raw.starts_with('/') || has_drive_letter(raw) || Path::new(raw).is_absolute()
+}
+
+/// `C:/` や `C:\` で始まるか。
+fn has_drive_letter(raw: &str) -> bool {
+    matches!(
+        raw.as_bytes(),
+        [drive, b':', b'/' | b'\\', ..] if drive.is_ascii_alphabetic()
+    )
 }
 
 /// xtask が知っているパスを、ビルドの出力と比べられる `/` 区切りの形にする。
