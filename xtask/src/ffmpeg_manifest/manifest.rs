@@ -24,13 +24,12 @@ pub struct Manifest {
     /// `configure` に渡した引数。
     pub configure_args: Vec<String>,
 
-    /// 生成を行った環境の CPU アーキテクチャと OS。
+    /// この構成が対象とするターゲットトリプル。`FFmpeg_build/` の下のディレクトリ名と同じ。
     ///
-    /// `config.h` の内容は生成した環境に依存するので、どの環境のものかを残す。
-    /// アーキテクチャは、xtask 自身のものではなく、`configure` が使ったコンパイラの
-    /// ターゲットのもの。
-    pub host_arch: String,
-    pub host_os: String,
+    /// `config.h` の内容は生成した環境に依存するので、どのターゲットのものかを残す。
+    /// 生成は対象のマシンで行うので、`configure` が使ったコンパイラのターゲットと
+    /// 一致する（アーキテクチャは、書き出す前に確かめている）。
+    pub triple: String,
 
     /// C の規格（`-std=` の値）。
     pub c_standard: String,
@@ -162,10 +161,11 @@ impl Manifest {
         write_array(&mut out, "configure_args", &self.configure_args);
 
         out.push_str(
-            "\n# 生成を行った環境。このファイルと同じディレクトリの内容はこの環境に依存する。\n[host]\n",
+            "\n# この構成が対象とするターゲット。このファイルと同じディレクトリの内容は、\n\
+             # このターゲットのマシンで生成したもの。ビルドスクリプトは、ビルド先の\n\
+             # `TARGET` と一致することを確かめる。\n[target]\n",
         );
-        write_string(&mut out, "arch", &self.host_arch);
-        write_string(&mut out, "os", &self.host_os);
+        write_string(&mut out, "triple", &self.triple);
 
         out.push_str("\n# 全翻訳単位に共通の、コンパイル時の指定。\n[compile]\n");
         write_string(&mut out, "std", &self.c_standard);

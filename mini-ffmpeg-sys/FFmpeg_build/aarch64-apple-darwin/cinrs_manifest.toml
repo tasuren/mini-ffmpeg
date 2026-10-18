@@ -17,10 +17,11 @@ configure_args = [
     "--enable-protocol=file,pipe",
 ]
 
-# 生成を行った環境。このファイルと同じディレクトリの内容はこの環境に依存する。
-[host]
-arch = "aarch64"
-os = "macos"
+# この構成が対象とするターゲット。このファイルと同じディレクトリの内容は、
+# このターゲットのマシンで生成したもの。ビルドスクリプトは、ビルド先の
+# `TARGET` と一致することを確かめる。
+[target]
+triple = "aarch64-apple-darwin"
 
 # 全翻訳単位に共通の、コンパイル時の指定。
 [compile]

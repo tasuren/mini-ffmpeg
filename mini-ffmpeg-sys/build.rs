@@ -45,6 +45,8 @@ use std::{
     thread,
 };
 
+use cinrs_core::include::SYSTEM_PATH_ENV_VAR;
+
 use self::translate::{Settings, Translated};
 
 /// エラーは表示して終了するだけなので、型を分けずに文字列で扱う。
@@ -299,11 +301,8 @@ fn cargo_env(name: &str) -> Result<String> {
 /// ビルドマニフェストのうち、変換に使う部分。
 #[derive(Debug)]
 struct Manifest {
-    /// ビルドマニフェストを作ったマシンのアーキテクチャ。`std::env::consts::ARCH` の値。
-    host_arch: String,
-
-    /// ビルドマニフェストを作ったマシンの OS。`std::env::consts::OS` の値。
-    host_os: String,
+    /// この構成が対象とするターゲットトリプル。Cargo の `TARGET` と同じ書き方。
+    triple: String,
 
     /// C の規格。`-std=` の値と同じ書き方。
     c_standard: String,
@@ -328,8 +327,7 @@ impl Manifest {
             .map_err(|error| format!("{MANIFEST_FILE} を読めません: {error}"))?;
 
         Ok(Self {
-            host_arch: string(&table, "host", "arch")?,
-            host_os: string(&table, "host", "os")?,
+            triple: string(&table, "target", "triple")?,
             c_standard: string(&table, "compile", "std")?,
             defines: string_array(&table, "compile", "defines")?,
             include_dirs: string_array(&table, "compile", "include_dirs")?,
@@ -369,29 +367,72 @@ fn check_target(manifest: &Manifest, target: &str) -> Result<()> {
     // `FFmpeg_build/<ターゲット>/config.h` は、`configure` を実行したマシンを調べた結果で、
     // 型の大きさや使える関数がそのマシンのものになっている。別のターゲットに
     // 使うと、FFmpeg が存在しない関数を呼んだり、違う分岐を選んだりする。
-    let target_arch = cargo_env("CARGO_CFG_TARGET_ARCH")?;
-    let target_os = cargo_env("CARGO_CFG_TARGET_OS")?;
-
-    if (target_arch.as_str(), target_os.as_str())
-        != (manifest.host_arch.as_str(), manifest.host_os.as_str())
-    {
+    //
+    // 構成はターゲットのディレクトリから選んでいるので、普通は一致する。食い違うのは、
+    // 別のターゲットのディレクトリを名前を変えてコピーしたときなど。
+    if manifest.triple != target {
         return Err(format!(
-            "mini-ffmpeg-sys は {target} 向けにビルドできません。\n\
-             取り込んでいる FFmpeg の構成（{BUILD_CONFIG_DIR}/{target}）は、\
-             {} の {} 向けに生成したものです。",
-            manifest.host_os, manifest.host_arch,
+            "{BUILD_CONFIG_DIR}/{target} の {MANIFEST_FILE} は、{} 向けの構成です。\n\
+             ディレクトリの名前とターゲットが食い違っています。\
+             `cargo xtask ffmpeg-manifest` を {target} のマシンで実行して作り直してください。",
+            manifest.triple,
         ));
     }
 
-    // 変換は、ビルドスクリプトが動いているマシンのプラットフォームのヘッダを
-    // 読んで行う。ビルド先が別のマシンだと、ヘッダとターゲットが食い違う。
-    let host = cargo_env("HOST")?;
+    check_system_include_path(target)
+}
 
-    if host != target {
+/// プラットフォームのヘッダの置き場所が、ターゲットのものになることを確かめる。
+///
+/// 変換は、ビルドスクリプトが動いているマシンのプラットフォームのヘッダを
+/// 読んで行う。cinrs は、そのマシンに合うディレクトリだけを自分で探す。
+///
+/// - ターゲットがホストと違う場合: ホストのヘッダはターゲットと配置が違う
+///   （`struct stat` のオフセットなど）ので、cinrs は探さない。
+/// - Linux と macOS 以外（Windows など）: 探す規則が無い。
+///
+/// どちらも [`SYSTEM_PATH_ENV_VAR`] で、ターゲット用のディレクトリを指定させる。
+/// cinrs は、変換のときに同じことを検査してエラーにするが、ここで先に止めれば、
+/// 何を設定すればよいかを mini-ffmpeg-sys の側の言葉で伝えられる。
+///
+/// 指定の中身がターゲットのものかは、ここでは分からない。存在しないディレクトリが
+/// 混じっていないことだけを見る。
+fn check_system_include_path(target: &str) -> Result<()> {
+    // 環境変数は、ネイティブのビルドでも cinrs の探索に使われる。値が変わったら
+    // 変換し直す。
+    println!("cargo:rerun-if-env-changed={SYSTEM_PATH_ENV_VAR}");
+
+    let host = cargo_env("HOST")?;
+    let target_os = cargo_env("CARGO_CFG_TARGET_OS")?;
+
+    let reason = if host != target {
+        format!("ホストが {host}、ターゲットが {target} で、ホストのヘッダはターゲットに使えません")
+    } else if !matches!(target_os.as_str(), "linux" | "macos") {
+        format!("{target_os} 向けには、cinrs がヘッダの場所を自分では探せません")
+    } else {
+        return Ok(());
+    };
+
+    // cinrs と同じ規則で読む。空の要素は無視し、残りが無ければ未設定と同じ。
+    let directories: Vec<PathBuf> = env::var_os(SYSTEM_PATH_ENV_VAR)
+        .iter()
+        .flat_map(env::split_paths)
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .collect();
+
+    if directories.is_empty() {
         return Err(format!(
-            "mini-ffmpeg-sys はクロスコンパイルに対応していません\
-             （ホストが {host}、ターゲットが {target}）。\n\
-             C のコードの変換に、ターゲットのプラットフォームのヘッダが要ります。"
+            "{SYSTEM_PATH_ENV_VAR} が必要です（{reason}）。\n\
+             {target} のプラットフォームのヘッダ（C ライブラリのヘッダ）があるディレクトリを、\
+             {SYSTEM_PATH_ENV_VAR} に指定してください。複数ある場合は、パスの区切り文字\
+             （Unix は `:`、Windows は `;`）で並べます。"
+        ));
+    }
+
+    if let Some(missing) = directories.iter().find(|directory| !directory.is_dir()) {
+        return Err(format!(
+            "{SYSTEM_PATH_ENV_VAR} に指定されたディレクトリ {} がありません。",
+            missing.display(),
         ));
     }
 

@@ -18,8 +18,8 @@ pub const PROBE_SOURCE: &str = "xtask-target-arch.c";
 /// [`PROBE_SOURCE`] をプリプロセスした結果のファイル名。`make` のターゲット。
 pub const PROBE_OUTPUT: &str = "xtask-target-arch.i";
 
-/// 名前は Rust の `CARGO_CFG_TARGET_ARCH` の値に揃える。ビルドスクリプトが、
-/// ビルドマニフェストの値とそのまま比べるため。
+/// 名前は Rust の `CARGO_CFG_TARGET_ARCH` の値に揃える。`triple` モジュールが、
+/// ターゲットトリプルのアーキテクチャと比べるため。
 ///
 /// 名前を文字列リテラルに入れているのは、マクロとして展開されないようにするため。
 /// `x86_64` のような識別子のままだと、コンパイラによっては定義済みのマクロに

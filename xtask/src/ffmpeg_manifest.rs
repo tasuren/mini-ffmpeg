@@ -36,7 +36,6 @@ mod triple;
 
 use std::{
     collections::BTreeSet,
-    env,
     fs::{self, File},
     path::{Path, PathBuf},
     process::Command,
@@ -168,7 +167,7 @@ pub fn run() -> Result<()> {
 
     let installed_headers = dry_run_installed_headers(&paths)?;
 
-    let manifest = collect(&paths, &tree, &target_arch, &commands, &installed_headers)?;
+    let manifest = collect(&paths, &tree, &commands, &installed_headers)?;
     write_outputs(&paths, &manifest)?;
 
     println!(
@@ -350,7 +349,6 @@ fn run_logged(mut command: Command, log_path: &Path) -> Result<()> {
 fn collect(
     paths: &Paths,
     tree: &SourceTree,
-    target_arch: &str,
     commands: &[CompileCommand],
     installed_headers: &[InstalledHeader],
 ) -> Result<Manifest> {
@@ -418,8 +416,7 @@ fn collect(
         ffmpeg_version: read_ffmpeg_version(paths)?,
         generated_dir: format!("{BUILD_CONFIG_DIR}/{}", paths.triple),
         configure_args: CONFIGURE_ARGS.iter().map(|arg| (*arg).to_owned()).collect(),
-        host_arch: target_arch.to_owned(),
-        host_os: env::consts::OS.to_owned(),
+        triple: paths.triple.clone(),
         c_standard: flags.std.ok_or("コンパイルコマンドに -std= がありません")?,
         defines: flags.defines,
         include_dirs,
