@@ -42,8 +42,12 @@ Rust で動作します。この `remux-spike` は FFmpeg の公式サンプル
 
 ただし、以下の前提・制限があります。
 
-- 動作を確かめたのは macOS (arm64) のみ。クロスコンパイルは、ターゲットの構成と
-  `CINRS_SYSTEM_INCLUDE_PATH` があればビルドスクリプトは通すが、動作は未確認
+- **まだalphaステージで、対策しきれていない問題もあり、実用は自己責任です。**
+- `mini-ffmpeg-sys` のテストが通るのは、`aarch64-apple-darwin`、`x86_64-apple-darwin`、
+  `x86_64-unknown-linux-gnu`。後ろの2つはクロスコンパイルで、ターゲット用のヘッダを
+  `CINRS_SYSTEM_INCLUDE_PATH` で指定する。`aarch64-unknown-linux-gnu` は構成があるが、
+  ビルドは失敗する。`remux-spike` を確かめたのは macOS (arm64) のみ。詳細は
+  [mini-ffmpeg-sys の README](mini-ffmpeg-sys/README.md)
 - スレッドを無効にした構成
 - コーデックもフィルタも含んでいない
 - ヘッダの `static inline` 関数と `#define` の定数は、まだ Rust から使えない
@@ -52,20 +56,20 @@ Rust で動作します。この `remux-spike` は FFmpeg の公式サンプル
 
 - FFmpeg の `configure` と `make` を一度実行し、ビルドの内容を抽出する
   （`cargo xtask ffmpeg-manifest`）
-  - `make` のコンパイルコマンドから、対象の `.c`・インクルードパス・マクロ定義
-  - `make` が出力する `.d` から、include されるファイル
-  - `make -n install-headers` から、公開ヘッダ
+    - `make` のコンパイルコマンドから、対象の `.c`・インクルードパス・マクロ定義
+    - `make` が出力する `.d` から、include されるファイル
+    - `make -n install-headers` から、公開ヘッダ
 - 抽出結果はビルドマニフェスト（`mini-ffmpeg-sys/FFmpeg_build/<ターゲットトリプル>/cinrs_manifest.toml`）
   として、`configure` の生成物とともにコミットしてあり、`configure`/`make` は FFmpeg 更新時かビルド設定変更時だけ
   再実行すれば良い
 - `mini-ffmpeg-sys` のビルドスクリプトが、ビルドマニフェストを元に C を Rust に
   変換する
-  - 実装: FFmpeg の `.c` 一つを Rust のファイル一つに変換する。翻訳単位が使う
-    項目だけを出力する cinrs の指定（`reachable_only`）で、ヘッダの使われない
-    宣言や関数を出力せず、変換後のコードを約 4 分の 1 に減らしている
-  - 公開 API: 公開ヘッダをまとめて一つの翻訳単位として変換し、クレートのルートに
-    置く。構造体などの型が一つに揃う。関数は宣言だけで、リンク時に実装の定義に
-    繋がる
+    - 実装: FFmpeg の `.c` 一つを Rust のファイル一つに変換する。翻訳単位が使う
+      項目だけを出力する cinrs の指定（`reachable_only`）で、ヘッダの使われない
+      宣言や関数を出力せず、変換後のコードを約 4 分の 1 に減らしている
+    - 公開 API: 公開ヘッダをまとめて一つの翻訳単位として変換し、クレートのルートに
+      置く。構造体などの型が一つに揃う。関数は宣言だけで、リンク時に実装の定義に
+      繋がる
 - 変換は入力が変わったときだけ行われる。Apple M3 Pro での目安は、変換に約 7 秒、
   変換後のコードのコンパイルに約 5 秒
 
