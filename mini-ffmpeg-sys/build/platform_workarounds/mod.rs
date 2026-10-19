@@ -1,105 +1,53 @@
 //! Target-specific exceptions for unsupported platform declarations.
 //!
-//! A replacement is only a parsing aid, never an ABI conversion. Before using it,
-//! inspect preprocessed C and its macro origins: only the declarations here may use
+//! A replacement is only a parsing aid, never an ABI conversion. Before generating
+//! Rust, inspect C tokens and their macro origins: only approved declarations may use
 //! the unsupported type. Afterwards, remove their Rust declarations from the
 //! public API and reject any remaining references. Implementation units must not
 //! retain even a declaration of these functions after reachability filtering.
 
-use std::path::Path;
+mod linux_aarch64_glibc;
+mod macos;
+mod model;
+
+pub use model::WorkaroundSet;
 
 use cinrs_core::{CommandLineMacro, FilePreprocessing, Options, include::HeaderKind, pp::Token};
 use proc_macro2::{Delimiter, Group, TokenStream, TokenTree};
+use std::path::Path;
 
-/// One unsupported function's original signature and excluded symbol.
-struct Declaration {
-    name: &'static str,
-    arguments: usize,
-}
+const SETS: &[WorkaroundSet] = &[macos::SET, linux_aarch64_glibc::SET];
+const NONE: WorkaroundSet = WorkaroundSet {
+    name: "no platform workaround",
+    matches_target: |_| false,
+    replacements: &[],
+    headers: &[],
+    is_sensitive_symbol: |_| false,
+    accepts_declaration: |_| false,
+    excludes_function: |_| false,
+};
 
-/// macOS SDK math.h declares these functions with binary16 arguments and results.
-/// Keep the signature and exclusion together so accepting a declaration cannot
-/// accidentally expose its substituted binary32 ABI.
-const HALF_FUNCTIONS: &[Declaration] = &[
-    Declaration {
-        name: "__fabsf16",
-        arguments: 1,
-    },
-    Declaration {
-        name: "__hypotf16",
-        arguments: 2,
-    },
-    Declaration {
-        name: "__sqrtf16",
-        arguments: 1,
-    },
-    Declaration {
-        name: "__ceilf16",
-        arguments: 1,
-    },
-    Declaration {
-        name: "__floorf16",
-        arguments: 1,
-    },
-    Declaration {
-        name: "__rintf16",
-        arguments: 1,
-    },
-    Declaration {
-        name: "__roundf16",
-        arguments: 1,
-    },
-    Declaration {
-        name: "__truncf16",
-        arguments: 1,
-    },
-    Declaration {
-        name: "__copysignf16",
-        arguments: 2,
-    },
-    Declaration {
-        name: "__nextafterf16",
-        arguments: 2,
-    },
-    Declaration {
-        name: "__fmaxf16",
-        arguments: 2,
-    },
-    Declaration {
-        name: "__fminf16",
-        arguments: 2,
-    },
-    Declaration {
-        name: "__fmaf16",
-        arguments: 3,
-    },
-];
-
-/// A target's parsing replacements, validation rules, and output exclusions.
-#[derive(Clone, Copy)]
-pub struct Workarounds {
-    macos_half: bool,
-}
-
-impl Workarounds {
+impl WorkaroundSet {
+    /// Selects one policy by target ABI; unknown targets receive an inactive set.
     pub fn for_target(target: &str) -> Self {
-        Self {
-            macos_half: target.ends_with("-apple-darwin"),
-        }
+        SETS.iter()
+            .copied()
+            .find(|set| (set.matches_target)(target))
+            .unwrap_or(NONE)
     }
 
-    /// Whether this target needs a separate pass over the original C tokens.
+    /// Whether this set requires a pass over preprocessed C before translation.
     pub fn needs_validation(self) -> bool {
-        self.macos_half
+        !self.headers.is_empty()
     }
 
-    /// Adds parsing replacements. Validation follows their macro origins to
-    /// recover the original type without changing conditional preprocessing.
+    /// Adds parsing aids whose original types are recovered by validation.
     pub fn apply(self, options: &mut Options) {
-        if self.macos_half {
-            options
-                .macros
-                .push(CommandLineMacro::Define("_Float16=float".into()));
+        for rule in self.replacements {
+            options.macros.push(CommandLineMacro::Define(format!(
+                "{}={}",
+                rule.original, rule.replacement
+            )));
         }
     }
 
@@ -110,7 +58,7 @@ impl Workarounds {
     /// This deliberately recognizes only standalone SDK prototypes, not arbitrary
     /// C declarations. A new SDK spelling requires review rather than guesswork.
     pub fn validate(self, source: &FilePreprocessing) -> Result<(), String> {
-        if !self.macos_half {
+        if !self.needs_validation() {
             return Ok(());
         }
 
@@ -136,7 +84,7 @@ impl Workarounds {
         let mut parentheses = 0usize;
 
         for (index, token) in source.tokens.iter().enumerate() {
-            match c_spelling(token) {
+            match self.c_spelling(token) {
                 "{" => braces += 1,
                 "}" => braces = braces.saturating_sub(1),
                 "(" => parentheses += 1,
@@ -145,7 +93,7 @@ impl Workarounds {
             }
 
             let boundary =
-                braces == 0 && parentheses == 0 && matches!(c_spelling(token), ";" | "}" | "");
+                braces == 0 && parentheses == 0 && matches!(self.c_spelling(token), ";" | "}" | "");
 
             if !boundary {
                 continue;
@@ -154,27 +102,37 @@ impl Workarounds {
             let declaration = &source.tokens[start..=index];
             start = index + 1;
 
-            if let Some(sensitive) = declaration
-                .iter()
-                .find(|token| c_spelling(token) == "_Float16" || self.excluded(c_spelling(token)))
-            {
+            if let Some(sensitive) = declaration.iter().find(|token| {
+                let name = self.c_spelling(token);
+                self.replacements.iter().any(|rule| rule.original == name)
+                    || self.excluded(name)
+                    || (self.is_sensitive_symbol)(name)
+            }) {
                 let file = source.map.file(source.map.file_of(sensitive.range.start));
-                let sdk_math = source.headers.iter().any(|header| {
+                let sdk_header = source.headers.iter().any(|header| {
                     header.file == file.id()
                         && matches!(header.kind, HeaderKind::System)
                         && Path::new(&header.name)
                             .file_name()
-                            .is_some_and(|name| name == "math.h")
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|name| self.headers.contains(&name))
                 });
 
-                if !sdk_math || !known_prototype(declaration) {
+                let words: Vec<_> = declaration
+                    .iter()
+                    .map(|token| self.c_spelling(token))
+                    .collect();
+                let known = (self.accepts_declaration)(&words);
+
+                if !sdk_header || !known {
                     return Err(format!(
-                        "unsupported macOS _Float16 use or excluded function reference in {} at offset {}: {}",
+                        "{}: unsupported type use or excluded symbol reference in {} at offset {}: {}",
+                        self.name,
                         file.name(),
                         sensitive.range.start - file.base(),
                         declaration
                             .iter()
-                            .map(|token| c_spelling(token))
+                            .map(|token| self.c_spelling(token))
                             .collect::<Vec<_>>()
                             .join(" "),
                     ));
@@ -188,7 +146,7 @@ impl Workarounds {
     /// Removes excluded foreign declarations and their attributes from the public
     /// API. Call `check_references` afterwards to reject any remaining callers.
     pub fn exclude_declarations(self, tokens: TokenStream) -> Result<TokenStream, String> {
-        if !self.macos_half {
+        if !self.needs_validation() {
             return Ok(tokens);
         }
 
@@ -196,10 +154,34 @@ impl Workarounds {
     }
 
     fn excluded(self, name: &str) -> bool {
-        self.macos_half
-            && HALF_FUNCTIONS
+        self.excluded_alias(name) || (self.excludes_function)(name)
+    }
+
+    fn excluded_alias(self, name: &str) -> bool {
+        self.replacements
+            .iter()
+            .any(|rule| rule.alias == Some(name))
+    }
+
+    /// Restore only this policy's substituted types through nested expansions.
+    /// Using the same macros for validation and translation preserves #ifdef
+    /// selection while retaining the original type's identity.
+    fn c_spelling(self, token: &Token) -> &str {
+        let mut expansion = token.origin.expansion();
+
+        while let Some(origin) = expansion {
+            if self
+                .replacements
                 .iter()
-                .any(|declaration| declaration.name == name)
+                .any(|rule| origin.name == rule.original)
+            {
+                return &origin.name;
+            }
+
+            expansion = origin.parent.as_ref();
+        }
+
+        token.kind.spelling()
     }
 
     fn filter_groups(self, tokens: TokenStream) -> Result<TokenStream, String> {
@@ -228,7 +210,7 @@ impl Workarounds {
             }
         }
 
-        Ok(out)
+        Ok(self.remove_aliases(out))
     }
 
     fn filter_foreign_items(self, tokens: TokenStream) -> Result<TokenStream, String> {
@@ -280,7 +262,7 @@ impl Workarounds {
     /// depend on excluded functions; public API units must pass this check after
     /// declaration removal so inline callers cannot retain an incorrect ABI.
     pub fn check_references(self, tokens: TokenStream) -> Result<(), String> {
-        if !self.macos_half {
+        if !self.needs_validation() {
             return Ok(());
         }
 
@@ -288,7 +270,7 @@ impl Workarounds {
             match token {
                 TokenTree::Ident(name) if self.excluded(&name.to_string()) => {
                     return Err(format!(
-                        "generated code still requires excluded macOS function {name}"
+                        "generated code still requires excluded platform symbol {name}"
                     ));
                 }
                 TokenTree::Group(group) => {
@@ -297,7 +279,7 @@ impl Workarounds {
                         .is_some_and(|name| self.excluded(name))
                     {
                         return Err(
-                            "generated code still links to an excluded macOS function".into()
+                            "generated code still links to an excluded platform symbol".into()
                         );
                     }
 
@@ -309,86 +291,37 @@ impl Workarounds {
 
         Ok(())
     }
-}
 
-/// Recover the replaced type even through nested macro expansions. Inspect the
-/// same preprocessor configuration used for translation: removing the macro for
-/// this pass could select a different #ifdef branch and miss a use entirely.
-fn c_spelling(token: &Token) -> &str {
-    let mut expansion = token.origin.expansion();
+    /// Drop whole generated typedef items, including attributes, after their C
+    /// declarations have been validated. References in retained items are rejected
+    /// by check_references, just like references to the excluded vector functions.
+    fn remove_aliases(self, tokens: TokenStream) -> TokenStream {
+        let mut out = TokenStream::new();
+        let mut item = Vec::new();
 
-    while let Some(origin) = expansion {
-        if origin.name == "_Float16" {
-            return "_Float16";
+        for token in tokens {
+            let boundary = matches!(&token, TokenTree::Punct(punct) if punct.as_char() == ';')
+                || matches!(&token, TokenTree::Group(group) if group.delimiter() == Delimiter::Brace);
+            item.push(token);
+
+            if boundary {
+                let alias = item.windows(2).any(|pair| {
+                    matches!(pair,
+                    [TokenTree::Ident(keyword), TokenTree::Ident(name)]
+                        if keyword == "type" && self.excluded_alias(&name.to_string()))
+                });
+
+                if !alias {
+                    out.extend(item.drain(..));
+                } else {
+                    item.clear();
+                }
+            }
         }
 
-        expansion = origin.parent.as_ref();
+        out.extend(item);
+        out
     }
-
-    token.kind.spelling()
-}
-
-/// Matches the exact binary16 signature, allowing trailing GNU attributes such
-/// as SDK availability metadata. Unsupported types inside attributes still fail.
-fn known_prototype(tokens: &[Token]) -> bool {
-    let words: Vec<_> = tokens.iter().map(|token| c_spelling(token)).collect();
-
-    HALF_FUNCTIONS.iter().any(|declaration| {
-        let mut expected = vec!["extern", "_Float16", declaration.name, "("];
-
-        for argument in 0..declaration.arguments {
-            if argument != 0 {
-                expected.push(",");
-            }
-
-            expected.push("_Float16");
-        }
-
-        expected.push(")");
-
-        if !words.starts_with(&expected) {
-            return false;
-        }
-
-        let mut rest = &words[expected.len()..];
-
-        // Skip trailing GNU attributes, such as SDK availability metadata, while
-        // checking for unsupported types and references to excluded functions.
-        // Attribute contents are otherwise not validated.
-        while rest.first() == Some(&"__attribute__") {
-            if rest.get(1) != Some(&"(") || rest.get(2) != Some(&"(") {
-                return false;
-            }
-
-            let mut depth = 0usize;
-            let mut end = None;
-
-            for (index, word) in rest.iter().enumerate().skip(1) {
-                if *word == "_Float16" || HALF_FUNCTIONS.iter().any(|item| item.name == *word) {
-                    return false;
-                }
-
-                match *word {
-                    "(" => depth += 1,
-                    ")" => {
-                        depth = depth.saturating_sub(1);
-                        if depth == 0 {
-                            end = Some(index + 1);
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            let Some(end) = end else {
-                return false;
-            };
-            rest = &rest[end..];
-        }
-
-        rest == [";"]
-    })
 }
 
 fn link_name(tokens: TokenStream) -> Option<String> {

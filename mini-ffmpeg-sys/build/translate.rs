@@ -11,10 +11,10 @@
 //! 変換する翻訳単位は 2 種類ある（[`UnitKind`]）。FFmpeg の `.c` と、公開ヘッダを
 //! include するだけの翻訳単位で、変換の指定が一部違う。
 
-#[path = "platform_workarounds.rs"]
+#[path = "platform_workarounds/mod.rs"]
 mod platform_workarounds;
 
-use self::platform_workarounds::Workarounds;
+use self::platform_workarounds::WorkaroundSet;
 use std::path::{Path, PathBuf};
 
 use cinrs_core::{
@@ -105,7 +105,7 @@ impl Settings {
     /// cinrs のランタイムを必要とする場合。
     pub fn translate(&self, source: &Path) -> Result<Translated, String> {
         let mut options = self.options(UnitKind::Implementation)?;
-        let workarounds = Workarounds::for_target(&self.target);
+        let workarounds = WorkaroundSet::for_target(&self.target);
         workarounds.apply(&mut options);
 
         // Check that unsupported platform types occur only in known declarations
@@ -132,7 +132,7 @@ impl Settings {
     /// [`Settings::translate`] と同じ。
     pub fn translate_public_api(&self, name: &str, source: &str) -> Result<Translated, String> {
         let mut options = self.options(UnitKind::PublicApi)?;
-        let workarounds = Workarounds::for_target(&self.target);
+        let workarounds = WorkaroundSet::for_target(&self.target);
         workarounds.apply(&mut options);
 
         // Check that unsupported platform types occur only in known declarations
@@ -251,7 +251,7 @@ impl Settings {
 /// する場合。
 fn finish(
     translation: FileTranslation,
-    workarounds: Workarounds,
+    workarounds: WorkaroundSet,
     public_api: bool,
 ) -> Result<Translated, String> {
     let diagnostics = &translation.diagnostics;

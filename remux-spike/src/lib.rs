@@ -34,8 +34,8 @@ mod remux_c {
     //   他の翻訳単位から参照されない。
     // - `#pragma cinrs system_include first` で、プラットフォームのヘッダを
     //   cinrs 同梱のヘッダより先に探させる。FFmpeg 本体の変換と同じ指定。
-    // - プラットフォーム用の回避策のヘッダ（隣の `cinrs_platform_fixups.h`）を、
-    //   プラットフォームのヘッダより前に読む。
+    // - Platform replacements are generated from the sys crate's shared policy.
+    //   The build script validates their uses before the macro translates C.
     // - `HAVE_AV_CONFIG_H` などを定義しない。`remux.c` は FFmpeg を使う側の
     //   プログラムで、公開のヘッダだけを include する。
     // - `main` を別の名前に変える。Rust のプログラムの入口と衝突させず、普通の

@@ -8,3 +8,8 @@ publish = false
 [dependencies]
 cinrs = "=0.3.0"
 mini-ffmpeg-sys = { path = "../mini-ffmpeg-sys" }
+
+[build-dependencies]
+# Share platform validation and replacements with the sys crate.
+cinrs-core = "=0.3.0"
+proc-macro2 = "1"

@@ -125,7 +125,9 @@ name = "remux-spike"
 version = "0.0.0"
 dependencies = [
  "cinrs",
+ "cinrs-core",
  "mini-ffmpeg-sys",
+ "proc-macro2",
 ]
 
 [[package]]
