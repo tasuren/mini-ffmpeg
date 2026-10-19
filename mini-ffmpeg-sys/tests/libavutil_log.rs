@@ -1,14 +1,14 @@
-//! `libavutil/log.c` を cinrs で変換した結果を、Rust から呼んで確かめる。
+//! Call cinrs-translated `libavutil/log.c` from Rust to verify it.
 //!
-//! `log.c` は、コールバックの関数のアドレスを整数（`uintptr_t`）にキャストして、
-//! アトミックな変数に保持している。関数のアドレスを整数にした値は、Rust の
-//! `static` の初期化子に書けないので、cinrs はこの変数をポインタとして持つ形に
-//! 変換する。コールバックの設定と呼び出しが、その形で正しく動くことをここで
-//! 確かめる。cinrs 0.2.0 はこの初期化を変換できなかった。
+//! `log.c` casts the callback function address to an integer (`uintptr_t`) and
+//! stores it in an atomic variable. A function address cast to an integer cannot
+//! appear in a Rust `static` initializer, so cinrs represents this variable as a
+//! pointer. Verify that setting and invoking callbacks works with this
+//! representation. cinrs 0.2.0 could not translate this initialization.
 //!
-//! `av_log` は可変長引数の関数で、書式の展開まで C の側で行う。Rust から渡した
-//! 可変長の引数が、取り込んだ C のコードを通って、C ライブラリの `vsnprintf`
-//! まで正しく届くことの確認にもなっている。
+//! `av_log` is variadic and performs formatting in C. This also checks that variadic
+//! arguments passed from Rust travel correctly through the translated C code to
+//! the C library's `vsnprintf`.
 
 use std::{
     ffi::{CStr, VaList, c_char, c_int, c_void},
@@ -18,17 +18,17 @@ use std::{
 
 use mini_ffmpeg_sys::libavutil::log;
 
-// `libavutil/log.h` の `AV_LOG_ERROR` と `AV_LOG_INFO`。
+// `AV_LOG_ERROR` and `AV_LOG_INFO` from `libavutil/log.h`.
 const AV_LOG_ERROR: c_int = 16;
 const AV_LOG_INFO: c_int = 32;
 
-/// [`capture`] が受け取った、レベルと整形済みの行。
+/// Levels and formatted lines received by [`capture`].
 static CAPTURED: Mutex<Vec<(c_int, String)>> = Mutex::new(Vec::new());
 
-/// `av_log_set_callback` に渡す、Rust で書いたコールバック。
+/// Rust callback passed to `av_log_set_callback`.
 ///
-/// C の側のコールバックの型は `void (*)(void *, int, const char *, va_list)`。
-/// 書式の展開は `av_log_format_line2` に任せ、結果の行だけを記録する。
+/// The C callback type is `void (*)(void *, int, const char *, va_list)`.
+/// Delegate formatting to `av_log_format_line2` and record only the resulting line.
 unsafe extern "C" fn capture(avcl: *mut c_void, level: c_int, format: *const c_char, args: VaList) {
     let mut line = [0 as c_char; 256];
     let mut print_prefix: c_int = 1;
@@ -46,19 +46,22 @@ unsafe extern "C" fn capture(avcl: *mut c_void, level: c_int, format: *const c_c
     }
 
     let line = unsafe { CStr::from_ptr(line.as_ptr()) };
-    let line = line.to_str().expect("書式も引数も ASCII").to_owned();
+    let line = line
+        .to_str()
+        .expect("format and arguments are ASCII")
+        .to_owned();
 
     CAPTURED.lock().unwrap().push((level, line));
 }
 
-/// コールバックはプロセス全体で 1 つなので、設定を変える検証を 1 つのテストに
-/// まとめている。テストを分けると、並列に実行されたときに互いの設定を上書きする。
+/// The callback is process-global, so keep changes to its configuration in one test.
+/// Separate tests could overwrite each other's configuration when run in parallel.
 #[test]
 fn av_log_calls_the_configured_callback() {
     unsafe {
-        // 既定のコールバック。標準エラー出力に書くので、内容までは確かめない。
-        // コールバックを保持する変数の初期値（既定のコールバックのアドレス）を
-        // 通る経路で、初期化が壊れていれば、ここで不正なアドレスを呼んで落ちる。
+        // The default callback writes to stderr, so do not inspect its output. This path
+        // uses the initial value of the callback variable (the default callback's address).
+        // Broken initialization would call an invalid address here and crash.
         log::av_log(
             ptr::null_mut(),
             AV_LOG_INFO,
@@ -68,8 +71,8 @@ fn av_log_calls_the_configured_callback() {
 
         log::av_log_set_callback(Some(capture));
 
-        // 文字列、整数、浮動小数点数を混ぜて、可変長の引数が順に取り出される
-        // ことを確かめる。
+        // Mix strings, integers, and floating-point values to verify that variadic
+        // arguments are consumed in order.
         log::av_log(
             ptr::null_mut(),
             AV_LOG_INFO,
@@ -80,8 +83,9 @@ fn av_log_calls_the_configured_callback() {
         );
         log::av_log(ptr::null_mut(), AV_LOG_ERROR, c"error level\n".as_ptr());
 
-        // `NULL` を設定すると、何も呼ばれなくなる。C の側は整数の 0 との比較で、
-        // 変換後はポインタの `NULL` との比較になる。意味が変わっていないこと。
+        // Setting `NULL` disables callbacks. The C comparison against integer zero
+        // becomes a pointer comparison against `NULL` after translation. Check that
+        // the meaning is preserved.
         log::av_log_set_callback(None);
         log::av_log(ptr::null_mut(), AV_LOG_INFO, c"dropped\n".as_ptr());
     }

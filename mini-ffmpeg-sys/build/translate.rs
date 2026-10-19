@@ -1,15 +1,15 @@
-//! C の翻訳単位 1 つを、cinrs で Rust のコードに変換する。
+//! Translate one C translation unit to Rust with cinrs.
 //!
-//! cinrs のマクロ（`c17!` など）がコンパイル時に行う変換を、`cinrs-core` を直接
-//! 呼んで行い、結果を文字列として返す。マクロに書く指定（プラグマ、`#define`、
-//! インクルードディレクトリ）は、[`cinrs_core::Options`] の項目として渡す。対応は
-//! [`Settings::options`] にまとめてある。
+//! Call `cinrs-core` directly to perform the translation normally done at compile
+//! time by cinrs macros (such as `c17!`), returning the result as a string. Macro
+//! settings (pragmas, `#define`, include directories) are passed as fields of
+//! [`cinrs_core::Options`]; [`Settings::options`] maps them.
 //!
-//! マクロを使わないのは、翻訳単位が使う項目だけを出力する指定
-//! （`Options::reachable_only`）が、マクロからは選べないため。
+//! Macros are not used because they cannot select `Options::reachable_only`, which
+//! emits only items used by the translation unit.
 //!
-//! 変換する翻訳単位は 2 種類ある（[`UnitKind`]）。FFmpeg の `.c` と、公開ヘッダを
-//! include するだけの翻訳単位で、変換の指定が一部違う。
+//! Two kinds of translation units ([`UnitKind`]) use slightly different settings:
+//! FFmpeg `.c` files and units that only include public headers.
 
 #[path = "platform_workarounds/mod.rs"]
 mod platform_workarounds;
@@ -23,86 +23,85 @@ use cinrs_core::{
 };
 use proc_macro2::{Delimiter, Spacing, TokenStream, TokenTree};
 
-/// FFmpeg 自身のビルドだけが定義するマクロ。
+/// Macro defined only when building FFmpeg itself.
 ///
-/// FFmpeg のヘッダは、これが定義されていると `config.h` を読み、アーキテクチャ別の
-/// 内部のヘッダ（`libavutil/bswap.h` の `arm/bswap.h` など）や、内部向けの
-/// アサーションに切り替わる。FFmpeg を使う側のプログラムは定義しない。
+/// When defined, FFmpeg headers read `config.h` and enable architecture-specific
+/// internal headers (such as `arm/bswap.h` from `libavutil/bswap.h`) and internal
+/// assertions. Programs using FFmpeg do not define it.
 const FFMPEG_INTERNAL_DEFINE: &str = "HAVE_AV_CONFIG_H";
 
-/// 翻訳単位の種類。変換の指定のうち、種類で変わるものを決める。
+/// Translation unit kind, selecting the settings that differ between kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnitKind {
-    /// FFmpeg の `.c`。関数と変数の定義を持ち、C のシンボルとして出力する。
+    /// An FFmpeg `.c` file containing function and variable definitions emitted as C symbols.
     ///
-    /// 使われない項目は出力しない。Rust のコードからは名前で参照せず、他の
-    /// 翻訳単位とは C のシンボルの名前で繋がる。
+    /// Unused items are omitted. Rust code does not reference them by name; other
+    /// translation units link to them by C symbol names.
     Implementation,
 
-    /// 公開ヘッダを include するだけの翻訳単位。利用者に見せる関数の宣言、型、
-    /// 列挙子を、1 つの名前空間に揃える。
+    /// A translation unit that only includes public headers, gathering user-facing
+    /// function declarations, types, and enumerators in one namespace.
     ///
-    /// 定義を持たないので、シンボルは出力しない。宣言は、リンクのときに
-    /// [`UnitKind::Implementation`] の翻訳単位の定義に繋がる。FFmpeg を使う側の
-    /// プログラムと同じ立場で読むので、[`FFMPEG_INTERNAL_DEFINE`] を定義しない。
+    /// It has no definitions and emits no symbols. Its declarations link to definitions
+    /// in [`UnitKind::Implementation`] units. It reads headers as an FFmpeg consumer
+    /// would, without defining [`FFMPEG_INTERNAL_DEFINE`].
     PublicApi,
 }
 
-/// 全翻訳単位に共通の、変換の指定。
+/// Translation settings shared by all translation units.
 #[derive(Debug, Clone)]
 pub struct Settings {
-    /// C の規格。`-std=` の値と同じ書き方（`c17`、`gnu17` など）。
+    /// C standard, in `-std=` value syntax (such as `c17` or `gnu17`).
     pub c_standard: String,
 
-    /// 変換後のコードのコンパイル先。ターゲットトリプル。
+    /// Target triple for compiling the translated code.
     pub target: String,
 
-    /// マクロ定義。`NAME` または `NAME=VALUE` の形で、`-D` に当たる。
+    /// Macro definitions in `NAME` or `NAME=VALUE` form, corresponding to `-D`.
     pub defines: Vec<String>,
 
-    /// インクルードディレクトリ。探索する順で、`-I` に当たる。
+    /// Include directories in search order, corresponding to `-I`.
     pub include_dirs: Vec<PathBuf>,
 }
 
-/// 翻訳単位 1 つを変換した結果。
+/// Result of translating one translation unit.
 #[derive(Debug)]
 pub struct Translated {
-    /// 変換後の Rust のコード。翻訳単位のモジュールと、その中身の再エクスポート。
+    /// Translated Rust code: the translation unit's module and re-exports of its contents.
     ///
-    /// 人が読むための整形はしていない。字下げは無く、文と波括弧の区切りで
-    /// 改行しているだけ。
+    /// Not formatted for human readers: no indentation, only line breaks at
+    /// statement and brace boundaries.
     pub rust: String,
 
-    /// 翻訳単位が定義する C のシンボル。外部リンケージを持つ関数と変数の名前。
+    /// C symbols defined by the translation unit: function and variable names with external linkage.
     pub symbols: Vec<String>,
 
-    /// 翻訳単位が宣言だけをしている、外部の関数と変数の C の名前。変換後の
-    /// コードの `extern` のブロックにあるもの。
+    /// C names of external functions and variables only declared by the translation
+    /// unit, appearing in `extern` blocks in the translated code.
     pub declarations: Vec<String>,
 
-    /// 翻訳単位が読んだヘッダのパス。cinrs 同梱のヘッダは含まない。
+    /// Header paths read by the translation unit, excluding cinrs's bundled headers.
     ///
-    /// FFmpeg のヘッダは渡したインクルードディレクトリからの相対パス、
-    /// プラットフォームのヘッダは絶対パスになる。
+    /// FFmpeg header paths are relative to the supplied include directories;
+    /// platform header paths are absolute.
     pub headers: Vec<String>,
 
-    /// cinrs の警告。位置と説明を 1 件ずつ整形したもの。
+    /// cinrs warnings, each formatted with its location and description.
     pub warnings: Vec<String>,
 }
 
 impl Settings {
-    /// `source` の翻訳単位を変換する。
+    /// Translate the translation unit at `source`.
     ///
-    /// `__FILE__` や診断に出るファイルの名前は、渡したパスと、インクルード
-    /// ディレクトリのパスがそのまま使われる。FFmpeg は `av_assert0` などで
-    /// `__FILE__` を使うので、絶対パスで渡すと、ビルドしたマシンのパスが実行
-    /// ファイルに入る。どちらも相対パスで渡し、起点のディレクトリを作業
-    /// ディレクトリにして呼ぶ。
+    /// `__FILE__` and diagnostics use the supplied source and include directory paths
+    /// unchanged. FFmpeg uses `__FILE__` in `av_assert0` and elsewhere, so absolute paths
+    /// would embed build-machine paths in executables. Supply both as relative paths
+    /// and call this with their base directory as the working directory.
     ///
     /// # Errors
     ///
-    /// ファイルを読めない場合、C のコードにエラーがある場合、変換後のコードが
-    /// cinrs のランタイムを必要とする場合。
+    /// Returns an error if the file cannot be read, the C source has errors, or the
+    /// translated code requires the cinrs runtime.
     pub fn translate(&self, source: &Path) -> Result<Translated, String> {
         let mut options = self.options(UnitKind::Implementation)?;
         let workarounds = WorkaroundSet::for_target(&self.target);
@@ -121,15 +120,15 @@ impl Settings {
         )
     }
 
-    /// 公開ヘッダを include するだけの翻訳単位を変換する。
+    /// Translate a translation unit that only includes public headers.
     ///
-    /// `name` は、ファイルの代わりに渡す C のコード（`source`）の名前で、診断と
-    /// `__FILE__` に使われる。[`Settings::translate`] と同じ理由で、相対パスの
-    /// 形にする。
+    /// `name` identifies the C source string (`source`) supplied instead of a file and
+    /// is used in diagnostics and `__FILE__`. Use a relative path for the same reason
+    /// as in [`Settings::translate`].
     ///
     /// # Errors
     ///
-    /// [`Settings::translate`] と同じ。
+    /// The same conditions as [`Settings::translate`].
     pub fn translate_public_api(&self, name: &str, source: &str) -> Result<Translated, String> {
         let mut options = self.options(UnitKind::PublicApi)?;
         let workarounds = WorkaroundSet::for_target(&self.target);
@@ -152,77 +151,77 @@ impl Settings {
         )
     }
 
-    /// cinrs に渡す指定を組み立てる。
+    /// Assemble options for cinrs.
     ///
-    /// 既定値は cinrs のマクロと同じなので、ここで設定するのは、マクロの中に
-    /// 書く指定と、マクロには無い指定だけ。cinrs には、C コンパイラと同じ
-    /// コマンドラインで動く `ccinrs` もあり、あちらはさらに多くの項目を変えている
-    /// （cinrs の `crates/ccinrs/src/driver.rs` の `options`）。cinrs を更新して
-    /// 変換の結果が変わったときは、あちらで増えた項目が無いかを見比べると良い。
+    /// Defaults match cinrs macros, so set only options normally specified inside a
+    /// macro and options unavailable to macros. cinrs also provides `ccinrs`, which
+    /// accepts C compiler command lines and changes more options (see `options` in
+    /// cinrs's `crates/ccinrs/src/driver.rs`). If a cinrs update changes translation
+    /// results, compare that function for newly configured options.
     fn options(&self, kind: UnitKind) -> Result<Options, String> {
         let (standard, dialect) = parse_c_standard(&self.c_standard)?;
 
-        // ターゲットを明示する。明示しない場合、cinrs は自身が動いているマシンか、
-        // 環境変数 `CINRS_TARGET` からターゲットを決める。ビルド先と食い違うと、
-        // 変換後のコードの assert でコンパイルが失敗する。
-        let target = TargetModel::from_triple(&self.target).map_err(|error| {
-            format!("ターゲット {} を cinrs が扱えません: {error}", self.target)
-        })?;
+        // Set the target explicitly. Otherwise cinrs infers it from its host or the
+        // `CINRS_TARGET` environment variable. A mismatch with the build target causes
+        // assertions in the translated code to fail compilation.
+        let target = TargetModel::from_triple(&self.target)
+            .map_err(|error| format!("cinrs does not support target {}: {error}", self.target))?;
 
         let mut options = Options::with_dialect(standard, dialect).for_target(target);
 
         options.include_paths = self.include_dirs.clone();
 
-        // 外部リンケージを持つ関数と変数を、C の名前のシンボルにする。マクロの
-        // `#pragma cinrs export` に当たる。翻訳単位は互いを C のシンボルの名前で
-        // 参照するので、これが無いとリンクできない。
+        // Emit functions and variables with external linkage under their C symbol names,
+        // corresponding to `#pragma cinrs export`. Translation units refer to each other
+        // by C symbol names, so linking requires this.
         //
-        // 公開 API の翻訳単位は定義を持たないので、要らない。ヘッダが誤って定義を
-        // 持っていた場合に、実装の側と同じシンボルを重ねて出力しないためでもある。
+        // The public API translation unit has no definitions and does not need it.
+        // Disabling it also avoids duplicate implementation symbols if a header
+        // unexpectedly contains definitions.
         options.export = kind == UnitKind::Implementation;
 
-        // プラットフォームのヘッダを、cinrs 同梱のヘッダより先に探させる。マクロの
-        // `#pragma cinrs system_include first` に当たる。
+        // Search platform headers before cinrs's bundled headers, corresponding to
+        // `#pragma cinrs system_include first`.
         //
-        // 同梱のヘッダを先にすると両者が混ざり、macOS では `int64_t` の定義が
-        // 食い違ってエラーになる。`config.h` はプラットフォームのヘッダを調べた
-        // 結果なので、同じヘッダを読ませるのが筋でもある。
+        // Searching bundled headers first mixes the two sets and causes conflicting
+        // `int64_t` definitions on macOS. `config.h` records checks against platform
+        // headers, so using the same headers is also consistent with that configuration.
         options.system_include = System::First;
 
-        // GCC が警告に留める規格違反を受け入れる。ISO の規格（`c17`）で変換する
-        // 場合にだけ意味があり、GNU の方言（`gnu17`）では元から受け入れられる。
+        // Accept standard violations that GCC treats as warnings. This matters only
+        // for ISO standards (`c17`); GNU dialects (`gnu17`) already accept them.
         //
-        // 元のビルドは `-std=c17` を C コンパイラに渡していて、コンパイラはこれらを
-        // エラーにしない。プラットフォームのヘッダにも該当する書き方がある。macOS
-        // の `<mach_debug/ipc_info.h>` は、列挙子に `int` の範囲を超える値を使って
-        // いて、`libavutil/random_seed.c` が `<mach/mach_time.h>` 経由で読む。
+        // The original build passes `-std=c17` to the C compiler, which does not reject
+        // these constructs. Platform headers also use them: macOS's
+        // `<mach_debug/ipc_info.h>` uses enumerator values outside the `int` range and
+        // is included by `libavutil/random_seed.c` through `<mach/mach_time.h>`.
         options.gnu_leniencies = true;
 
-        // 翻訳単位が定義するシンボルと、そこから辿って届く項目だけを出力する。
+        // Emit only symbols defined by the translation unit and items reachable from them.
         //
-        // C の `#include` は、ヘッダの宣言をすべて翻訳単位に持ち込む。cinrs の
-        // 既定では、使われない宣言や `static inline` 関数、型もすべて Rust の
-        // コードになり、今の構成では出力の約 4 分の 3 をそれが占める。その分だけ
-        // rustc の処理が増え、ビルドが 1 分以上長くなる。
+        // C's `#include` brings every header declaration into the translation unit.
+        // By default cinrs translates unused declarations, `static inline` functions,
+        // and types too. They account for roughly three quarters of the output in the
+        // current configuration, increasing rustc's work and build time by over a minute.
         //
-        // 既定で無効なのは、マクロの周りの Rust のコードが、中の項目を名前で
-        // 参照しうるため。取り込んだ翻訳単位は C のシンボルの名前で繋がるだけ
-        // なので、リンカから見える定義を起点にして足りる。
+        // This is disabled by default because Rust surrounding a macro may reference its
+        // items by name. Translated units only link through C symbol names, so definitions
+        // visible to the linker suffice as roots.
         //
-        // 引き換えに、翻訳単位が使わない型や宣言は、Rust から見えなくなる。
+        // The tradeoff is that unused types and declarations become inaccessible from Rust.
         //
-        // 公開 API の翻訳単位では、これを切る。宣言と型を見せることが目的で、
-        // しかも定義を 1 つも持たないので、これが有効だと絞り込みで何も残らない。
+        // Disable filtering for the public API translation unit: exposing declarations
+        // and types is its purpose, and it has no definitions to use as roots, so filtering
+        // would leave nothing.
         options.reachable_only = kind == UnitKind::Implementation;
 
-        // 複素数型（`_Complex`）を受け付けない。cinrs は複素数型の演算をランタイムの
-        // クレート（`cinrs-rt`）の呼び出しに変換するので、受け付けると
-        // `mini-ffmpeg-sys` の実行時の依存が増える。切っておけば、変換後の
-        // コードは `core` だけで動く。
+        // Reject complex types (`_Complex`). cinrs translates complex arithmetic to calls
+        // into its runtime crate (`cinrs-rt`), which would add a runtime dependency to
+        // `mini-ffmpeg-sys`. Disabling it keeps translated code dependent only on `core`.
         //
-        // cinrs のマクロでは有効になっている。切ると `__STDC_NO_COMPLEX__` が
-        // 定義されるので、このマクロを見て分岐するヘッダは、マクロのときと違う側を
-        // 読む。FFmpeg が複素数型を使うようになったら、ここでエラーになる。
+        // cinrs macros enable this by default. Disabling it defines `__STDC_NO_COMPLEX__`,
+        // so headers conditional on that macro take a different branch than with macros.
+        // If FFmpeg starts using complex types, translation fails here.
         options.complex = false;
 
         for define in &self.defines {
@@ -243,12 +242,12 @@ impl Settings {
     }
 }
 
-/// cinrs の変換の結果を確かめ、ファイルに書き出せる形にする。
+/// Validate cinrs's translation result and prepare it for writing to a file.
 ///
 /// # Errors
 ///
-/// C のコードにエラーがある場合と、変換後のコードが cinrs のランタイムを必要と
-/// する場合。
+/// Returns an error if the C source has errors or the translated code requires
+/// the cinrs runtime.
 fn finish(
     translation: FileTranslation,
     workarounds: WorkaroundSet,
@@ -267,7 +266,7 @@ fn finish(
         }
     }
 
-    // ファイルを開けないなど、位置を持たないエラー。
+    // Errors without locations, such as failure to open a file.
     if let Some(message) = diagnostics.fatal_message() {
         errors.push(message.to_owned());
     }
@@ -278,15 +277,15 @@ fn finish(
 
     let items = translation
         .items
-        .ok_or("cinrs がエラーを報告せずに、変換後のコードを返しませんでした")?;
+        .ok_or("cinrs returned no translated code without reporting an error")?;
 
-    // 複素数型を切っているので、ランタイムを呼ぶコードは出ないはず。cinrs が
-    // 別の用途でランタイムを使うようになった場合に、依存に無いクレートを
-    // 参照するコードを黙って出力しないための確認。
+    // With complex types disabled, no runtime calls should be emitted. If cinrs
+    // starts using its runtime for another purpose, reject the output rather than
+    // silently emitting references to a crate that is not a dependency.
     if translation.uses_runtime {
         return Err(
-            "変換後のコードが cinrs のランタイム（cinrs-rt）を必要とします。\n\
-             mini-ffmpeg-sys に依存を足すかどうかを、先に決めてください。"
+            "The translated code requires the cinrs runtime (cinrs-rt).\n\
+             Decide whether to add this dependency to mini-ffmpeg-sys before proceeding."
                 .to_owned(),
         );
     }
@@ -320,15 +319,15 @@ fn finish(
     })
 }
 
-/// 変換後のコードから、`extern` のブロックにある関数と変数の C の名前を集める。
+/// Collect C names of functions and variables in `extern` blocks in translated code.
 ///
-/// cinrs は、宣言だけの関数と変数を `unsafe extern "C" { … }` のブロックに並べる。
-/// ここでは、`extern` と ABI の文字列に続く波括弧のブロックを探し、その中の
-/// `fn` と `static` の名前を拾う。モジュールの中などに入れ子になっていても、
-/// 波括弧を辿って探す。
+/// cinrs places declaration-only functions and variables in `unsafe extern "C" { … }`
+/// blocks. Find brace groups following `extern` and an ABI string, then collect
+/// `fn` and `static` names inside them. Recurse through groups to find blocks
+/// nested in modules or elsewhere.
 ///
-/// Rust の名前と C の名前が違う宣言には、`#[link_name = "…"]` が付く。その場合は
-/// 属性の値を C の名前とする。
+/// Declarations whose Rust and C names differ have `#[link_name = "…"]`; use
+/// that attribute's value as the C name.
 fn collect_declarations(tokens: TokenStream, out: &mut Vec<String>) {
     let tokens: Vec<TokenTree> = tokens.into_iter().collect();
 
@@ -350,14 +349,14 @@ fn collect_declarations(tokens: TokenStream, out: &mut Vec<String>) {
     }
 }
 
-/// `extern` のブロックの中身から、宣言された関数と変数の C の名前を集める。
+/// Collect C names of declared functions and variables from an `extern` block's contents.
 fn collect_extern_items(tokens: TokenStream, out: &mut Vec<String>) {
     let mut link_name = None;
     let mut tokens = tokens.into_iter().peekable();
 
     while let Some(token) = tokens.next() {
         match token {
-            // 属性。`link_name` であれば、次の宣言の C の名前として覚えておく。
+            // Remember a `link_name` attribute as the C name of the next declaration.
             TokenTree::Group(group) if group.delimiter() == Delimiter::Bracket => {
                 if let Some(name) = find_link_name(group.stream()) {
                     link_name = Some(name);
@@ -365,7 +364,7 @@ fn collect_extern_items(tokens: TokenStream, out: &mut Vec<String>) {
             }
 
             TokenTree::Ident(ident) if ident == "fn" || ident == "static" => {
-                // `static mut name` の `mut` を飛ばす。
+                // Skip `mut` in `static mut name`.
                 if matches!(tokens.peek(), Some(TokenTree::Ident(next)) if next == "mut") {
                     tokens.next();
                 }
@@ -380,11 +379,11 @@ fn collect_extern_items(tokens: TokenStream, out: &mut Vec<String>) {
     }
 }
 
-/// 属性の中身（`link_name = "…"`）から、名前の文字列を取り出す。
+/// Extract the name string from attribute contents (`link_name = "…"`).
 ///
-/// 値は文字列リテラルのトークンで、前後の引用符だけを外す。エスケープは解釈
-/// しない。エスケープを含むのは、プラットフォームのヘッダの `__asm` のラベル
-/// （`"\u{1}_nanosleep"`）くらいで、FFmpeg の名前には現れない。
+/// The value is a string literal token; remove only its surrounding quotes without
+/// interpreting escapes. Escapes appear mainly in platform header `__asm` labels
+/// (such as `"\u{1}_nanosleep"`), not in FFmpeg names.
 fn find_link_name(tokens: TokenStream) -> Option<String> {
     let tokens: Vec<TokenTree> = tokens.into_iter().collect();
 
@@ -401,7 +400,7 @@ fn find_link_name(tokens: TokenStream) -> Option<String> {
                 .map(str::to_owned)
         }
 
-        // `#[unsafe(link_name = "…")]` の形にも備える。
+        // Also handle the `#[unsafe(link_name = "…")]` form.
         [TokenTree::Ident(word), TokenTree::Group(inner)] if word == "unsafe" => {
             find_link_name(inner.stream())
         }
@@ -410,10 +409,10 @@ fn find_link_name(tokens: TokenStream) -> Option<String> {
     }
 }
 
-/// C の規格の名前を、cinrs の規格と方言の組に直す。
+/// Convert a C standard name to a cinrs standard and dialect pair.
 ///
-/// 名前は `-std=` の値と同じで、`gnu` で始まるものが GNU の方言。対応が無い値は、
-/// 黙って別の規格で変換せずにエラーにする。
+/// Names use `-std=` syntax; a `gnu` prefix selects the GNU dialect. Reject
+/// unsupported values rather than silently translating with another standard.
 fn parse_c_standard(name: &str) -> Result<(Standard, Dialect), String> {
     let (dialect, revision) = match name.strip_prefix("gnu") {
         Some(revision) => (Dialect::Gnu, revision),
@@ -426,33 +425,33 @@ fn parse_c_standard(name: &str) -> Result<(Standard, Dialect), String> {
         "11" => Standard::C11,
         "17" => Standard::C17,
         "23" => Standard::C23,
-        _ => return Err(format!("C の規格 {name} を cinrs が扱えません")),
+        _ => return Err(format!("cinrs does not support C standard {name}")),
     };
 
     Ok((standard, dialect))
 }
 
-/// 1 行がこの長さを超えたら、次の `,` で改行する。配列の初期化子のように、
-/// 文や波括弧の区切りが無いまま続く箇所のため。
+/// Once a line exceeds this length, break at the next `,`. This handles sequences
+/// without statement or brace boundaries, such as array initializers.
 const LINE_WIDTH: usize = 100;
 
-/// トークンの並びを、適度に改行しながら文字列にする。
+/// Render a token stream to a string with moderate line lengths.
 ///
-/// cinrs が返すのはトークンの並びで、そのまま文字列にすると、翻訳単位の全体が
-/// 1 行になる。Rust としては正しいが、rustc は極端に長い行の処理が遅く、
-/// `mini-ffmpeg-sys` のコンパイルが約 6 秒から約 33 秒に延びた。エラーや panic の
-/// 位置も、すべて 1 行目になってしまう。
+/// Stringifying cinrs's token stream directly puts the entire translation unit
+/// on one line. That is valid Rust, but rustc handles extremely long lines slowly:
+/// compilation of `mini-ffmpeg-sys` increased from about 6 to about 33 seconds.
+/// Error and panic locations would also all point to line 1.
 ///
-/// 整形のクレート（`syn` と `prettyplease`）を使えば読みやすくなるが、出力は
-/// `OUT_DIR` にあって人が読むものではないので、依存を増やさずに、改行だけを
-/// 入れている。改行するのは、`;` の後、波括弧の内側と後、長い行の `,` の後。
-/// トークンとトークンの間に改行を足すだけなので、コードの意味は変わらない。
-/// 文字列リテラルは 1 つのトークンで、その中身には触れない。
+/// Formatting crates (`syn` and `prettyplease`) would improve readability, but
+/// these files live in `OUT_DIR` and are not intended for human reading. Add only
+/// line breaks, avoiding extra dependencies: after `;`, inside and after braces,
+/// and after `,` on long lines. Inserting breaks only between tokens preserves
+/// code semantics. String literals are single tokens and remain untouched.
 #[derive(Default)]
 struct TokenWriter {
     out: String,
 
-    /// 今の行に書いた文字数。
+    /// Number of characters written on the current line.
     line_width: usize,
 }
 
@@ -481,9 +480,9 @@ impl TokenWriter {
                     let character = punct.as_char();
                     self.push(character.encode_utf8(&mut [0; 4]));
 
-                    // `Joint` は、次の記号と合わせて 1 つの演算子になる印（`::` や
-                    // `->`、ライフタイムの `'`）。間に空白や改行を入れると、別の
-                    // トークンになってしまう。
+                    // `Joint` marks punctuation joined to the next token as one operator (`::`,
+                    // `->`, or a lifetime's `'`). Inserting whitespace would split it into
+                    // different tokens.
                     if punct.spacing() == Spacing::Alone {
                         let is_long_line = self.line_width > LINE_WIDTH;
                         self.separate(character == ';' || (character == ',' && is_long_line));
@@ -508,7 +507,7 @@ impl TokenWriter {
         self.line_width += text.len();
     }
 
-    /// トークンの区切りを書く。`break_line` なら改行、そうでなければ空白。
+    /// Write a token separator: a newline if `break_line`, otherwise a space.
     fn separate(&mut self, break_line: bool) {
         if break_line {
             self.out.push('\n');

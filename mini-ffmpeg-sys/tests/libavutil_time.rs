@@ -1,21 +1,20 @@
-//! `libavutil/time.c` を cinrs で変換した結果を、Rust から呼んで確かめる。
+//! Call cinrs-translated `libavutil/time.c` from Rust to verify it.
 //!
-//! `time.c` はプラットフォームのヘッダ（`<sys/time.h>`、`<unistd.h>`）を使い、
-//! `gettimeofday` や `clock_gettime`、`nanosleep` を呼ぶ。プラットフォームの
-//! ヘッダを読めていて、その宣言から C ライブラリの関数へ正しくリンクできて
-//! いることを、ここで確かめる。
+//! `time.c` uses platform headers (`<sys/time.h>`, `<unistd.h>`) and calls
+//! `gettimeofday`, `clock_gettime`, and `nanosleep`. Verify that platform headers
+//! were read and their declarations link correctly to C library functions.
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use mini_ffmpeg_sys::libavutil::time;
 
-/// `av_gettime` は、UNIX エポックからのマイクロ秒を返す。Rust の時計と
-/// 突き合わせて、単位と基準が合っていることを確かめる。
+/// `av_gettime` returns microseconds since the UNIX epoch. Compare against Rust's
+/// clock to verify the unit and epoch.
 ///
-/// macOS の SDK のヘッダは、`nanosleep` などの宣言に `__asm("_nanosleep")` の形で
-/// シンボル名のラベルを付けている。これを cinrs が誤ったシンボル名に変換すると、
-/// このテストはリンクで失敗する。cinrs 0.2.0 は、先頭に `_` が余分に付いた名前に
-/// 変換していた。
+/// macOS SDK headers attach symbol labels such as `__asm("_nanosleep")` to
+/// `nanosleep` and other declarations. An incorrect cinrs translation of those
+/// symbol names causes this test to fail linking. cinrs 0.2.0 translated them
+/// with an extra leading `_`.
 #[test]
 fn av_gettime_returns_microseconds_since_unix_epoch() {
     let before = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
@@ -24,7 +23,7 @@ fn av_gettime_returns_microseconds_since_unix_epoch() {
 
     let time = Duration::from_micros(microseconds.try_into().unwrap());
 
-    // `av_gettime` はマイクロ秒に切り捨てるので、下限だけ 1 マイクロ秒の余裕を持たせる。
+    // `av_gettime` truncates to microseconds, so allow one microsecond only at the lower bound.
     assert!(
         time + Duration::from_micros(1) >= before,
         "{time:?} < {before:?}"
@@ -32,8 +31,8 @@ fn av_gettime_returns_microseconds_since_unix_epoch() {
     assert!(time <= after, "{time:?} > {after:?}");
 }
 
-/// `config.h` で `HAVE_CLOCK_GETTIME` が有効なので、相対時刻は単調な時計から
-/// 取られる。`#if` の分岐が `config.h` の通りに選ばれていることの確認。
+/// `HAVE_CLOCK_GETTIME` is enabled in `config.h`, so relative time uses a monotonic
+/// clock. Verify that `#if` branches follow `config.h`.
 #[test]
 fn av_gettime_relative_is_monotonic() {
     assert_eq!(unsafe { time::av_gettime_relative_is_monotonic() }, 1);
@@ -44,9 +43,9 @@ fn av_gettime_relative_is_monotonic() {
     assert!(second >= first);
 }
 
-/// `av_usleep` が、指定した時間だけ実際に待つこと。`nanosleep` に渡す
-/// `struct timespec` のレイアウトが食い違っていると、待たずに戻るか、
-/// 見当違いの時間だけ待つことになる。
+/// Check that `av_usleep` actually waits for the requested duration. A mismatched
+/// layout for `struct timespec` passed to `nanosleep` would cause an immediate
+/// return or an incorrect sleep duration.
 #[test]
 fn av_usleep_sleeps_for_requested_duration() {
     let requested = Duration::from_millis(20);

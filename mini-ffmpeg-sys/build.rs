@@ -1,34 +1,34 @@
-//! FFmpeg の C のコードを、cinrs で Rust のコードに変換する。
+//! Translate FFmpeg's C code to Rust with cinrs.
 //!
-//! ビルドマニフェスト（`FFmpeg_build/<ターゲット>/cinrs_manifest.toml`）の翻訳単位を 1 つずつ変換し、Cargo が用意する
-//! 出力用のディレクトリ（`OUT_DIR`）に書き出す。`src/lib.rs` が、それを読み込む。
+//! Translate each translation unit in the build manifest
+//! (`FFmpeg_build/<target>/cinrs_manifest.toml`) and write it to Cargo's output
+//! directory (`OUT_DIR`), where `src/lib.rs` loads it.
 //!
-//! - `<ライブラリ>/<名前>.rs`: 翻訳単位 1 つを変換したもの。FFmpeg の関数と変数の
-//!   定義を持つ。
-//! - `public_api.rs`: 公開ヘッダ（ビルドマニフェストの `public_headers`）を
-//!   変換したもの。利用者に見せる関数の宣言、型、列挙子を持つ。
-//! - `generated.rs`: モジュールの宣言。`src/lib.rs` が `include!` で読む。
+//! - `<library>/<name>.rs`: One translated translation unit, containing FFmpeg
+//!   function and variable definitions.
+//! - `public_api.rs`: Translated public headers (`public_headers` in the build
+//!   manifest), containing function declarations, types, and enumerators for users.
+//! - `generated.rs`: Module declarations loaded by `include!` in `src/lib.rs`.
 //!
-//! # ビルドスクリプトで変換する理由
+//! # Why translation runs in the build script
 //!
-//! cinrs のマクロ（`c17!` など）を翻訳単位ごとに書く方法もあるが、次の理由で
-//! 採っていない。
+//! Writing a cinrs macro (`c17!`, for example) for each translation unit is an
+//! alternative, but is not used for the following reasons:
 //!
-//! - マクロでは、翻訳単位が使う項目だけを出力する指定を選べない。ヘッダの
-//!   中身がすべて Rust のコードになり、ビルドが 1 分以上長くなる。指定の説明は
-//!   `build/translate.rs` にある。
-//! - マクロは、クレートがコンパイルされるたびに、1 つずつ順に展開される。
-//!   ビルドスクリプトは、入力が変わらない限り再実行されず、翻訳単位を並列に
-//!   変換できる。
+//! - Macros cannot select the option that emits only items used by a translation
+//!   unit. The entire contents of headers become Rust code, adding over a minute
+//!   to the build. See `build/translate.rs` for the option's details.
+//! - Macros expand sequentially every time the crate is compiled. The build script
+//!   only reruns when its inputs change and can translate units in parallel.
 //!
-//! 変換済みの Rust のコードをリポジトリやクレートに入れておく方法も採っていない。
-//! 変換後のコードには、FFmpeg のコードに加えて、プラットフォームのヘッダの宣言や
-//! インライン関数が含まれる。それを配布する代わりに、FFmpeg のソースを無編集で
-//! 配布し、ビルドするマシンで、そのマシンのヘッダを読んで変換する。C コンパイラで
-//! ビルドする場合と同じ形になる。
+//! Translated Rust code is also not checked into the repository or included in the
+//! crate package. In addition to FFmpeg code, it contains platform header declarations
+//! and inline functions. Instead of distributing that output, we distribute the
+//! unmodified FFmpeg source and translate it on the build machine using that
+//! machine's headers, as a build with a C compiler would do.
 //!
-//! そのため、このクレートのビルドには、FFmpeg のツリーと、プラットフォームの
-//! ヘッダ（macOS なら Command Line Tools の SDK）が要る。C コンパイラは要らない。
+//! Building this crate therefore requires the FFmpeg source tree and platform
+//! headers (the Command Line Tools SDK on macOS). A C compiler is not required.
 
 #[path = "build/translate.rs"]
 mod translate;
@@ -49,88 +49,88 @@ use cinrs_core::include::SYSTEM_PATH_ENV_VAR;
 
 use self::translate::{Settings, Translated};
 
-/// エラーは表示して終了するだけなので、型を分けずに文字列で扱う。
+/// Errors are only displayed before exiting, so strings suffice without separate error types.
 type Result<T> = std::result::Result<T, String>;
 
-/// ターゲットごとのビルド構成を置くディレクトリ。`FFmpeg_build/<ターゲットトリプル>/` に、
-/// ビルドマニフェストと `configure` / `make` の生成物がある。
+/// Directory containing target-specific build configurations. Each
+/// `FFmpeg_build/<target-triple>/` contains a build manifest and files generated
+/// by `configure` / `make`.
 const BUILD_CONFIG_DIR: &str = "FFmpeg_build";
 
-/// ビルドマニフェスト。ターゲットの構成のディレクトリの中にある。
-/// `cargo xtask ffmpeg-manifest` が書き出す。
+/// Build manifest within the target's configuration directory.
+/// Written by `cargo xtask ffmpeg-manifest`.
 const MANIFEST_FILE: &str = "cinrs_manifest.toml";
 
-/// ビルドマニフェストのパスを、テストに伝える環境変数。
+/// Environment variable that passes the build manifest path to tests.
 ///
-/// ビルドマニフェストはターゲットごとに別の場所にあり、`include_str!` に固定の
-/// パスを書けない。そのため、ビルドスクリプトが選んだパスを `rustc-env` で渡す。
+/// Each target has its build manifest in a different location, so `include_str!`
+/// cannot use a fixed path. The build script passes its selected path via `rustc-env`.
 const MANIFEST_PATH_ENV: &str = "MINI_FFMPEG_SYS_MANIFEST";
 
-/// FFmpeg のツリー（サブモジュール）。
+/// FFmpeg source tree (a submodule).
 const FFMPEG_DIR: &str = "FFmpeg";
 
-/// モジュールの宣言を書き出すファイル。`OUT_DIR` からの相対パス。
+/// File containing module declarations, relative to `OUT_DIR`.
 ///
-/// `src/lib.rs` の `include!` と揃える。
+/// Keep this in sync with the `include!` in `src/lib.rs`.
 const ROOT_FILE: &str = "generated.rs";
 
-/// 公開ヘッダを変換したファイル。`OUT_DIR` からの相対パス。
+/// File containing translated public headers, relative to `OUT_DIR`.
 const PUBLIC_API_FILE: &str = "public_api.rs";
 
-/// 公開ヘッダを include するだけの翻訳単位の名前。診断と `__FILE__` に使われる。
+/// Name of the translation unit that only includes public headers, used in diagnostics and `__FILE__`.
 ///
-/// ファイルとしては存在しない。C のコードは、ビルドスクリプトが組み立てて、
-/// 文字列のまま cinrs に渡す。
+/// This file does not exist on disk. The build script assembles its C source and
+/// passes it directly to cinrs as a string.
 const PUBLIC_API_SOURCE_NAME: &str = "public_api.c";
 
-/// FFmpeg の公開の関数と変数の名前が、共通して持つ先頭の文字列。
+/// Common prefix of FFmpeg's public function and variable names.
 ///
-/// 公開 API の翻訳単位には、FFmpeg の宣言のほかに、公開ヘッダが読む
-/// プラットフォームのヘッダの宣言（`strcat` など）も入る。宣言と定義の突き合わせ
-/// （[`check_public_declarations`]）では、FFmpeg の宣言だけを見る必要がある。
-/// cinrs は宣言がどのヘッダから来たかを返さないので、名前で見分ける。
+/// The public API translation unit contains declarations from platform headers
+/// (such as `strcat`) included by public headers, as well as FFmpeg declarations.
+/// Matching declarations to definitions ([`check_public_declarations`]) must only
+/// consider FFmpeg declarations. cinrs does not report the originating header for
+/// each declaration, so names are used to distinguish them.
 ///
-/// FFmpeg の公開の名前は、`av_`、`avio_`、`avcodec_`、`avformat_`、`avutil_` の
-/// ように、すべて `av` で始まる命名規則になっている。外れた場合の振る舞いは
-/// 次の通り。
+/// FFmpeg's public names all start with `av`, such as `av_`, `avio_`, `avcodec_`,
+/// `avformat_`, and `avutil_`. Deviations behave as follows:
 ///
-/// - プラットフォームに `av` で始まる関数があると、定義が無いと誤って報告されて
-///   止まる。[`UNDEFINED_PUBLIC_DECLARATIONS`] に足すかを判断する。
-/// - `av` で始まらない FFmpeg の公開の名前があると、検査されない。
+/// - A platform function starting with `av` causes a false missing-definition error.
+///   Decide whether to add it to [`UNDEFINED_PUBLIC_DECLARATIONS`].
+/// - An FFmpeg public name that does not start with `av` is not checked.
 const FFMPEG_PUBLIC_PREFIX: &str = "av";
 
-/// 公開ヘッダが宣言しているが、この構成では定義されない名前。
+/// Names declared by public headers but not defined in this configuration.
 ///
-/// 呼ばなければ問題は無いが、呼ぶとリンクで失敗する。宣言が見えていても使えない
-/// ことを、ここに理由とともに残す。
+/// They cause no problem unless called, at which point linking fails. Keep the
+/// reasons here to document why visible declarations cannot be used.
 const UNDEFINED_PUBLIC_DECLARATIONS: &[&str] = &[
-    // `libavcodec/jni.h` が無条件に宣言している、Android 専用の関数。定義は
-    // `libavcodec/jni.c` の `#if defined(__ANDROID__)` の中にある。ヘッダの説明にも
-    // 「Android でのみ使える」とある。
+    // Android-only functions unconditionally declared by `libavcodec/jni.h`. Their
+    // definitions are inside `#if defined(__ANDROID__)` in `libavcodec/jni.c`.
+    // The header also documents them as available only on Android.
     "av_jni_get_android_app_ctx",
     "av_jni_set_android_app_ctx",
 ];
 
-/// 変換を行うスレッドのスタックの大きさ。
+/// Stack size for translation worker threads.
 ///
-/// 変換後のコードを文字列にする処理は、式の入れ子の深さだけ再帰する。C の
-/// マクロが展開された式は深くなりやすく、スレッドの既定の大きさ（2 MiB）に
-/// 収まる保証が無いので、余裕を持たせている。確保されるのは仮想メモリで、
-/// 使わなかった分は実メモリを消費しない。
+/// Rendering translated code to a string recurses to the depth of nested
+/// expressions. Expanded C macros can produce deeply nested expressions that may
+/// not fit in a thread's default 2 MiB stack, so reserve extra space. The reservation
+/// uses virtual memory; unused portions do not consume physical memory.
 const WORKER_STACK_SIZE: usize = 64 << 20;
 
 fn main() -> ExitCode {
-    // ビルドスクリプトが何かを `rerun-if-changed` で指定すると、Cargo は指定した
-    // ファイルが変わったときだけ再実行する。指定が 1 つも無いと、パッケージ内の
-    // どのファイルが変わっても再実行される。エラーで終わる場合にも効かせるために、
-    // 最初に出力する。
+    // Once a build script emits any `rerun-if-changed` directives, Cargo reruns it
+    // only when a listed file changes. Without any directives, every file in the
+    // package is tracked. Emit these first so they also apply when the script fails.
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=build/translate.rs");
     // Track the directory so adding a platform module also reruns the build.
     println!("cargo:rerun-if-changed=build/platform_workarounds");
 
-    // ビルドマニフェストはターゲットごとに別のファイルなので、今のターゲットのものを
-    // 指定する。無い場合も、置かれたときに再実行させるために指定する。
+    // Track the current target's manifest, since each target has a separate file.
+    // Track missing manifests too, so creating one reruns the build script.
     if let Ok(target) = env::var("TARGET") {
         println!(
             "cargo:rerun-if-changed={}",
@@ -142,9 +142,9 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
 
         Err(error) => {
-            // `cargo::error` に渡せるのは 1 行だけ。変換のエラーは複数行になるので、
-            // 全文は標準エラー出力に書く。Cargo は、ビルドスクリプトが失敗したときに
-            // 標準エラー出力の内容を表示する。
+            // `cargo::error` accepts only one line. Translation errors span multiple lines,
+            // so write the full message to stderr. Cargo displays stderr when a build
+            // script fails.
             eprintln!("{error}");
 
             let summary = error.lines().next().unwrap_or_default();
@@ -156,19 +156,19 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<()> {
-    // Cargo は、ビルドスクリプトをパッケージのルートを作業ディレクトリにして
-    // 実行する。以降のパスは、すべてそこからの相対パスで扱う。
-    // cinrs に絶対パスを渡すと困るが、`build.rs` では上記により問題ない。
-    // 理由は `Settings::translate` の説明にある。
+    // Cargo runs build scripts with the package root as the working directory.
+    // All subsequent paths are relative to that directory. Passing absolute paths
+    // to cinrs is undesirable, but these relative paths avoid that issue here.
+    // See `Settings::translate` for the reason.
 
     let target = cargo_env("TARGET")?;
     let manifest_path = manifest_path(&target);
 
     let manifest_text = fs::read_to_string(&manifest_path).map_err(|error| {
         format!(
-            "{} を読めません: {error}\n\
-             {target} 向けの構成が取り込まれていない可能性があります。\
-             取り込み済みのターゲット: {}",
+            "cannot read {}: {error}\n\
+             A configuration for {target} may not have been recorded. \
+             Available targets: {}",
             manifest_path.display(),
             available_targets(),
         )
@@ -178,7 +178,7 @@ fn run() -> Result<()> {
     println!(
         "cargo:rustc-env={MANIFEST_PATH_ENV}={}",
         env::current_dir()
-            .map_err(|error| format!("作業ディレクトリを取得できません: {error}"))?
+            .map_err(|error| format!("cannot get the working directory: {error}"))?
             .join(&manifest_path)
             .display(),
     );
@@ -186,8 +186,8 @@ fn run() -> Result<()> {
     check_target(&manifest, &target)?;
     require_ffmpeg_tree()?;
 
-    // 翻訳単位を名前の順に並べ、重複を除く。出力を、ビルドマニフェストの側の順序に
-    // 左右されないようにするため。
+    // Sort translation units by name and remove duplicates so the output does not
+    // depend on their order in the build manifest.
     let units: Vec<Unit> = manifest
         .translation_units
         .iter()
@@ -203,20 +203,21 @@ fn run() -> Result<()> {
         include_dirs: manifest.include_dirs.iter().map(PathBuf::from).collect(),
     };
 
-    // 公開 API の翻訳単位は 1 つで、絞り込みをしないので、実装の翻訳単位の
-    // 1 つより時間が掛かる。実装の翻訳単位の変換と並べて進める。
+    // The single public API translation unit is not filtered, so it takes longer
+    // than one implementation translation unit. Translate it alongside the
+    // implementation translation units.
     let (translated, public_api) = thread::scope(|scope| {
         let public_api = thread::Builder::new()
             .stack_size(WORKER_STACK_SIZE)
             .spawn_scoped(scope, || {
                 translate_public_api(&settings, &manifest.public_headers)
             })
-            .map_err(|error| format!("変換のスレッドを起動できません: {error}"))?;
+            .map_err(|error| format!("cannot start a translation thread: {error}"))?;
 
         let translated = translate_units(&settings, &units);
         let public_api = public_api
             .join()
-            .map_err(|_| "変換のスレッドが異常終了しました".to_owned())?;
+            .map_err(|_| "translation thread panicked".to_owned())?;
 
         Ok::<_, String>((translated?, public_api?))
     })?;
@@ -232,8 +233,8 @@ fn run() -> Result<()> {
             &render_unit(unit, &output.rust),
         )?;
 
-        // 警告は 1 行にして Cargo に渡す。改行があると、2 行目以降が Cargo への
-        // 指示として解釈されうる。
+        // Flatten warnings to one line before passing them to Cargo. Otherwise,
+        // subsequent lines could be interpreted as Cargo directives.
         for warning in &output.warnings {
             let warning = warning.replace('\n', " ");
             println!("cargo::warning={}: {warning}", unit.source_path());
@@ -247,14 +248,14 @@ fn run() -> Result<()> {
 
     for warning in &public_api.warnings {
         let warning = warning.replace('\n', " ");
-        println!("cargo::warning=公開ヘッダ: {warning}");
+        println!("cargo::warning=public headers: {warning}");
     }
 
     write_file(&out_dir.join(ROOT_FILE), &render_root(&out_dir, &units)?)?;
 
-    // 変換の入力が変わったら、変換し直す。翻訳単位の `.c` と、それが読んだ
-    // ヘッダのすべて。プラットフォームのヘッダも含めているので、SDK を更新した
-    // ときにも変換し直される。
+    // Retranslate when any input changes: each translation unit's `.c` file and all
+    // headers it reads. Including platform headers also triggers retranslation
+    // when the SDK is updated.
     let mut inputs = BTreeSet::new();
 
     for (unit, output) in units.iter().zip(&translated) {
@@ -271,12 +272,12 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-/// ターゲットのビルドマニフェストのパス。パッケージのルートからの相対パス。
+/// Target build manifest path, relative to the package root.
 fn manifest_path(target: &str) -> PathBuf {
     Path::new(BUILD_CONFIG_DIR).join(target).join(MANIFEST_FILE)
 }
 
-/// 取り込み済みのターゲットトリプルの一覧。エラー文に添えるための文字列。
+/// Available target triples, formatted for error messages.
 fn available_targets() -> String {
     let mut targets: Vec<String> = fs::read_dir(BUILD_CONFIG_DIR)
         .into_iter()
@@ -289,36 +290,36 @@ fn available_targets() -> String {
     targets.sort();
 
     if targets.is_empty() {
-        "なし".to_owned()
+        "none".to_owned()
     } else {
         targets.join(", ")
     }
 }
 
-/// Cargo がビルドスクリプトに設定する環境変数を読む。
+/// Read an environment variable set by Cargo for the build script.
 fn cargo_env(name: &str) -> Result<String> {
-    env::var(name).map_err(|error| format!("環境変数 {name} を読めません: {error}"))
+    env::var(name).map_err(|error| format!("cannot read environment variable {name}: {error}"))
 }
 
-/// ビルドマニフェストのうち、変換に使う部分。
+/// Parts of the build manifest used for translation.
 #[derive(Debug)]
 struct Manifest {
-    /// この構成が対象とするターゲットトリプル。Cargo の `TARGET` と同じ書き方。
+    /// Target triple for this configuration, in the same format as Cargo's `TARGET`.
     triple: String,
 
-    /// C の規格。`-std=` の値と同じ書き方。
+    /// C standard, in the same format as a `-std=` value.
     c_standard: String,
 
-    /// マクロ定義。`NAME` または `NAME=VALUE` の形。
+    /// Macro definitions in `NAME` or `NAME=VALUE` form.
     defines: Vec<String>,
 
-    /// インクルードディレクトリ。パッケージのルートからの相対パス。
+    /// Include directories, relative to the package root.
     include_dirs: Vec<String>,
 
-    /// 翻訳単位。FFmpeg のツリーからの相対パス。
+    /// Translation units, relative to the FFmpeg source tree.
     translation_units: Vec<String>,
 
-    /// 公開ヘッダ。`#include` に書く名前（`libavutil/avutil.h` の形）。
+    /// Public headers, using their `#include` names (such as `libavutil/avutil.h`).
     public_headers: Vec<String>,
 }
 
@@ -326,7 +327,7 @@ impl Manifest {
     fn parse(text: &str) -> Result<Self> {
         let table: toml::Table = text
             .parse()
-            .map_err(|error| format!("{MANIFEST_FILE} を読めません: {error}"))?;
+            .map_err(|error| format!("cannot read {MANIFEST_FILE}: {error}"))?;
 
         Ok(Self {
             triple: string(&table, "target", "triple")?,
@@ -345,11 +346,11 @@ fn string(table: &toml::Table, section: &str, key: &str) -> Result<String> {
         .and_then(|section| section.get(key))
         .and_then(toml::Value::as_str)
         .map(str::to_owned)
-        .ok_or_else(|| format!("{MANIFEST_FILE} に {section}.{key} の文字列がありません"))
+        .ok_or_else(|| format!("{MANIFEST_FILE} is missing a string at {section}.{key}"))
 }
 
 fn string_array(table: &toml::Table, section: &str, key: &str) -> Result<Vec<String>> {
-    let missing = || format!("{MANIFEST_FILE} に {section}.{key} の文字列の配列がありません");
+    let missing = || format!("{MANIFEST_FILE} is missing an array of strings at {section}.{key}");
 
     table
         .get(section)
@@ -361,22 +362,23 @@ fn string_array(table: &toml::Table, section: &str, key: &str) -> Result<Vec<Str
         .collect()
 }
 
-/// ビルド先が、取り込んだ FFmpeg の構成で扱えるターゲットであることを確かめる。
+/// Check that the build target is supported by the recorded FFmpeg configuration.
 ///
-/// 止める場合は 2 つある。どちらも、そのまま進むと、変換は通るのに動作が
-/// 食い違うか、プラットフォームのヘッダのエラーが大量に出て原因が分かりにくい。
+/// There are two reasons to stop. Continuing would either produce a successful
+/// translation with mismatched behavior or flood the output with platform header
+/// errors that obscure the cause.
 fn check_target(manifest: &Manifest, target: &str) -> Result<()> {
-    // `FFmpeg_build/<ターゲット>/config.h` は、`configure` を実行したマシンを調べた結果で、
-    // 型の大きさや使える関数がそのマシンのものになっている。別のターゲットに
-    // 使うと、FFmpeg が存在しない関数を呼んだり、違う分岐を選んだりする。
+    // `FFmpeg_build/<target>/config.h` records the machine examined by `configure`,
+    // including its type sizes and available functions. Reusing it for another target
+    // can make FFmpeg call unavailable functions or select incorrect branches.
     //
-    // 構成はターゲットのディレクトリから選んでいるので、普通は一致する。食い違うのは、
-    // 別のターゲットのディレクトリを名前を変えてコピーしたときなど。
+    // The configuration is selected from the target directory, so it normally matches.
+    // A mismatch can occur if another target's directory is copied under a new name.
     if manifest.triple != target {
         return Err(format!(
-            "{BUILD_CONFIG_DIR}/{target} の {MANIFEST_FILE} は、{} 向けの構成です。\n\
-             ディレクトリの名前とターゲットが食い違っています。\
-             `cargo xtask ffmpeg-manifest` を {target} のマシンで実行して作り直してください。",
+            "{MANIFEST_FILE} in {BUILD_CONFIG_DIR}/{target} contains a configuration for {}.\n\
+             The directory name does not match the target. \
+             Regenerate it by running `cargo xtask ffmpeg-manifest` on a {target} machine.",
             manifest.triple,
         ));
     }
@@ -384,38 +386,40 @@ fn check_target(manifest: &Manifest, target: &str) -> Result<()> {
     check_system_include_path(target)
 }
 
-/// プラットフォームのヘッダの置き場所が、ターゲットのものになることを確かめる。
+/// Check that platform header locations can be supplied for the target.
 ///
-/// 変換は、ビルドスクリプトが動いているマシンのプラットフォームのヘッダを
-/// 読んで行う。cinrs は、そのマシンに合うディレクトリだけを自分で探す。
+/// Translation reads platform headers on the machine running the build script.
+/// cinrs only discovers directories appropriate for that machine:
 ///
-/// - ターゲットがホストと違う場合: ホストのヘッダはターゲットと配置が違う
-///   （`struct stat` のオフセットなど）ので、cinrs は探さない。
-/// - Linux と macOS 以外（Windows など）: 探す規則が無い。
+/// - A target different from the host: host headers have different layouts (such
+///   as `struct stat` offsets), so cinrs does not discover them.
+/// - Platforms other than Linux and macOS (such as Windows): no discovery rules exist.
 ///
-/// どちらも [`SYSTEM_PATH_ENV_VAR`] で、ターゲット用のディレクトリを指定させる。
-/// cinrs は、変換のときに同じことを検査してエラーにするが、ここで先に止めれば、
-/// 何を設定すればよいかを mini-ffmpeg-sys の側の言葉で伝えられる。
+/// Both cases require target directories via [`SYSTEM_PATH_ENV_VAR`]. cinrs checks
+/// this during translation too, but stopping here explains the required setup in
+/// terms of mini-ffmpeg-sys.
 ///
-/// 指定の中身がターゲットのものかは、ここでは分からない。存在しないディレクトリが
-/// 混じっていないことだけを見る。
+/// This cannot establish whether the supplied headers belong to the target.
+/// It only checks that all supplied directories exist.
 fn check_system_include_path(target: &str) -> Result<()> {
-    // 環境変数は、ネイティブのビルドでも cinrs の探索に使われる。値が変わったら
-    // 変換し直す。
+    // cinrs uses this variable for discovery even in native builds. Retranslate
+    // when its value changes.
     println!("cargo:rerun-if-env-changed={SYSTEM_PATH_ENV_VAR}");
 
     let host = cargo_env("HOST")?;
     let target_os = cargo_env("CARGO_CFG_TARGET_OS")?;
 
     let reason = if host != target {
-        format!("ホストが {host}、ターゲットが {target} で、ホストのヘッダはターゲットに使えません")
+        format!(
+            "the host is {host} and the target is {target}; host headers cannot be used for the target"
+        )
     } else if !matches!(target_os.as_str(), "linux" | "macos") {
-        format!("{target_os} 向けには、cinrs がヘッダの場所を自分では探せません")
+        format!("cinrs cannot discover header locations for {target_os}")
     } else {
         return Ok(());
     };
 
-    // cinrs と同じ規則で読む。空の要素は無視し、残りが無ければ未設定と同じ。
+    // Follow cinrs's parsing rules: ignore empty entries; no remaining entries means unset.
     let directories: Vec<PathBuf> = env::var_os(SYSTEM_PATH_ENV_VAR)
         .iter()
         .flat_map(env::split_paths)
@@ -424,16 +428,16 @@ fn check_system_include_path(target: &str) -> Result<()> {
 
     if directories.is_empty() {
         return Err(format!(
-            "{SYSTEM_PATH_ENV_VAR} が必要です（{reason}）。\n\
-             {target} のプラットフォームのヘッダ（C ライブラリのヘッダ）があるディレクトリを、\
-             {SYSTEM_PATH_ENV_VAR} に指定してください。複数ある場合は、パスの区切り文字\
-             （Unix は `:`、Windows は `;`）で並べます。"
+            "{SYSTEM_PATH_ENV_VAR} is required ({reason}).\n\
+             Set {SYSTEM_PATH_ENV_VAR} to the directories containing platform headers \
+             (C library headers) for {target}. Separate multiple directories with the path separator \
+             (`:` on Unix, `;` on Windows)."
         ));
     }
 
     if let Some(missing) = directories.iter().find(|directory| !directory.is_dir()) {
         return Err(format!(
-            "{SYSTEM_PATH_ENV_VAR} に指定されたディレクトリ {} がありません。",
+            "directory {} specified in {SYSTEM_PATH_ENV_VAR} does not exist.",
             missing.display(),
         ));
     }
@@ -441,34 +445,34 @@ fn check_system_include_path(target: &str) -> Result<()> {
     Ok(())
 }
 
-/// FFmpeg のツリーがあることを確かめる。
+/// Check that the FFmpeg source tree exists.
 ///
-/// ツリーは Git のサブモジュールなので、`--recurse-submodules` を付けずに
-/// クローンした直後は空のディレクトリになっている。そのまま変換すると、cinrs が
-/// 「ファイルが見つからない」というエラーを翻訳単位の数だけ出し、原因が
-/// 分かりにくい。先にここで止めて、何をすれば良いかを伝える。
+/// The tree is a Git submodule, so cloning without `--recurse-submodules` leaves
+/// an empty directory. Translating immediately would produce a cinrs "file not
+/// found" error for every translation unit, obscuring the cause. Stop here first
+/// and explain the required action.
 ///
-/// crates.io から取得した場合は、ツリーがパッケージに同梱されているので、
-/// この検査には掛からない。
+/// Packages downloaded from crates.io include the source tree, so they pass
+/// this check.
 fn require_ffmpeg_tree() -> Result<()> {
-    // どのファイルでも良いが、libavutil の中心のヘッダで代表させている。
+    // Any file would do; use libavutil's central header as the marker.
     let marker = Path::new(FFMPEG_DIR).join("libavutil/avutil.h");
 
-    // サブモジュールを取得したあとに、ビルドスクリプトを再実行させる。
+    // Rerun the build script after the submodule is fetched.
     println!("cargo:rerun-if-changed={}", marker.display());
 
     if marker.is_file() {
         Ok(())
     } else {
         Err(format!(
-            "FFmpeg のツリーがありません（{} が見つかりません）。\
-             サブモジュールを取得してください: git submodule update --init",
+            "FFmpeg source tree is missing ({} was not found). \
+             Fetch the submodule: git submodule update --init",
             marker.display(),
         ))
     }
 }
 
-/// 翻訳単位 1 つ。`libavutil/log.c` なら、ライブラリが `libavutil`、名前が `log`。
+/// One translation unit. For `libavutil/log.c`, the library is `libavutil` and the name is `log`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Unit {
     library: String,
@@ -476,39 +480,40 @@ struct Unit {
 }
 
 impl Unit {
-    /// FFmpeg のツリーからの相対パスを、ライブラリと名前に分ける。
+    /// Split a path relative to the FFmpeg source tree into a library and a name.
     ///
-    /// ライブラリと名前は、そのまま Rust のモジュールの名前にする。そのままでは
-    /// モジュールの名前にできないパスはエラーにする。今の構成には該当するものが
-    /// 無いので、名前の変換の規則は、必要になった時点で決める。
+    /// The library and name are used directly as Rust module names. Reject paths that
+    /// cannot serve as module names unchanged. None occur in the current configuration,
+    /// so naming rules can be decided when needed:
     ///
-    /// - サブディレクトリにある翻訳単位（`libavcodec/aac/aacdec.c` など）。
-    ///   モジュールを入れ子にする必要があり、同じ名前の翻訳単位
-    ///   （`libavcodec/aac.c`）があると衝突する。
-    /// - Rust の識別子として書けない名前や、予約語と同じ名前。
+    /// - Translation units in subdirectories (such as `libavcodec/aac/aacdec.c`) require
+    ///   nested modules and can collide with a same-named unit (`libavcodec/aac.c`).
+    /// - Names that are not Rust identifiers or that match reserved keywords.
     fn parse(path: &str) -> Result<Self> {
         let unsupported =
-            |reason: &str| format!("翻訳単位 {path} をモジュールにできません: {reason}");
+            |reason: &str| format!("cannot create a module for translation unit {path}: {reason}");
 
         let (library, file) = path
             .split_once('/')
-            .ok_or_else(|| unsupported("ライブラリのディレクトリの下にありません"))?;
+            .ok_or_else(|| unsupported("not inside a library directory"))?;
 
         if file.contains('/') {
-            return Err(unsupported("サブディレクトリの翻訳単位には未対応です"));
+            return Err(unsupported(
+                "translation units in subdirectories are not supported",
+            ));
         }
 
         let name = file
             .strip_suffix(".c")
-            .ok_or_else(|| unsupported("拡張子が .c ではありません"))?;
+            .ok_or_else(|| unsupported("extension is not .c"))?;
 
         for identifier in [library, name] {
             if !is_plain_identifier(identifier) {
-                return Err(unsupported("Rust の識別子として書けない名前です"));
+                return Err(unsupported("name is not a valid Rust identifier"));
             }
 
             if RUST_KEYWORDS.contains(&identifier) {
-                return Err(unsupported("Rust の予約語と同じ名前です"));
+                return Err(unsupported("name is a reserved Rust keyword"));
             }
         }
 
@@ -518,17 +523,17 @@ impl Unit {
         })
     }
 
-    /// FFmpeg のツリーからの相対パス。
+    /// Path relative to the FFmpeg source tree.
     fn source_path(&self) -> String {
         format!("{}/{}.c", self.library, self.name)
     }
 
-    /// 翻訳単位のファイル。パッケージのルートからの相対パス。
+    /// Translation unit file, relative to the package root.
     fn source_file(&self) -> PathBuf {
         Path::new(FFMPEG_DIR).join(self.source_path())
     }
 
-    /// 変換したファイル。`OUT_DIR` からの相対パス。
+    /// Translated file, relative to `OUT_DIR`.
     fn module_file(&self) -> PathBuf {
         Path::new(&self.library).join(format!("{}.rs", self.name))
     }
@@ -543,7 +548,7 @@ fn is_plain_identifier(text: &str) -> bool {
         && characters.all(|rest| rest.is_ascii_lowercase() || rest.is_ascii_digit() || rest == '_')
 }
 
-/// Rust の予約語。小文字だけの名前を対象にしているので、`Self` は含めていない。
+/// Rust reserved keywords. `Self` is omitted because only lowercase names are accepted.
 const RUST_KEYWORDS: &[&str] = &[
     "abstract", "as", "async", "await", "become", "box", "break", "const", "continue", "crate",
     "do", "dyn", "else", "enum", "extern", "false", "final", "fn", "for", "gen", "if", "impl",
@@ -552,11 +557,11 @@ const RUST_KEYWORDS: &[&str] = &[
     "unsafe", "unsized", "use", "virtual", "where", "while", "yield",
 ];
 
-/// すべての翻訳単位を変換する。結果は `units` と同じ順。
+/// Translate all translation units, returning results in the order of `units`.
 ///
-/// 翻訳単位は互いに独立なので、CPU のコアの数だけ並列に変換する。エラーに
-/// なった翻訳単位があれば、すべてをまとめて報告する。1 つ直すたびに全体を
-/// 変換し直さずに済ませるため。
+/// Translation units are independent, so process them in parallel using the number
+/// of CPU cores. Report all failed units together to avoid retranslating everything
+/// after fixing each individual error.
 fn translate_units(settings: &Settings, units: &[Unit]) -> Result<Vec<Translated>> {
     let next_index = AtomicUsize::new(0);
     let worker_count = thread::available_parallelism().map_or(1, NonZero::get);
@@ -564,8 +569,8 @@ fn translate_units(settings: &Settings, units: &[Unit]) -> Result<Vec<Translated
     let work = || {
         let mut finished = Vec::new();
 
-        // 翻訳単位ごとに掛かる時間が大きく違うので、先に均等に分けず、
-        // 手の空いたスレッドが次の 1 つを取っていく。
+        // Translation times vary widely, so idle threads take the next unit instead
+        // of using a fixed partition of the work.
         while let Some(unit) = units.get(next_index.fetch_add(1, Ordering::Relaxed)) {
             finished.push((unit, settings.translate(&unit.source_file())));
         }
@@ -581,16 +586,12 @@ fn translate_units(settings: &Settings, units: &[Unit]) -> Result<Vec<Translated
                     .spawn_scoped(scope, work)
             })
             .collect::<std::io::Result<Vec<_>>>()
-            .map_err(|error| format!("変換のスレッドを起動できません: {error}"))?;
+            .map_err(|error| format!("cannot start a translation thread: {error}"))?;
 
         let mut finished = Vec::new();
 
         for worker in workers {
-            finished.extend(
-                worker
-                    .join()
-                    .map_err(|_| "変換のスレッドが異常終了しました")?,
-            );
+            finished.extend(worker.join().map_err(|_| "translation thread panicked")?);
         }
 
         Ok(finished)
@@ -611,7 +612,7 @@ fn translate_units(settings: &Settings, units: &[Unit]) -> Result<Vec<Translated
     }
 
     if !failures.is_empty() {
-        let mut message = format!("{} 個の翻訳単位を変換できません。", failures.len());
+        let mut message = format!("failed to translate {} translation units.", failures.len());
 
         for (unit, error) in &failures {
             let _ = write!(message, "\n\n{}:\n{error}", unit.source_path());
@@ -622,18 +623,22 @@ fn translate_units(settings: &Settings, units: &[Unit]) -> Result<Vec<Translated
 
     Ok(units
         .iter()
-        .map(|unit| translated.remove(&unit).expect("全翻訳単位の結果がある"))
+        .map(|unit| {
+            translated
+                .remove(&unit)
+                .expect("all translation unit results are present")
+        })
         .collect())
 }
 
-/// 公開ヘッダをすべて include するだけの翻訳単位を組み立て、変換する。
+/// Assemble and translate a translation unit that only includes all public headers.
 ///
-/// cinrs が変換できるのは翻訳単位（`.c` と、そこから読まれるヘッダ）で、ヘッダを
-/// 単体では渡せない。そこで、`#include` だけを並べた C のコードを作る。
+/// cinrs accepts translation units (`.c` files and their included headers), not
+/// standalone headers. Build C source consisting only of `#include` directives.
 fn translate_public_api(settings: &Settings, public_headers: &[String]) -> Result<Translated> {
     let mut source = String::from(
-        "/* mini-ffmpeg-sys のビルドスクリプトが組み立てた翻訳単位。\n\
-         * ビルドマニフェストの public_headers を include する。 */\n",
+        "/* Translation unit assembled by the mini-ffmpeg-sys build script.\n\
+         * Includes public_headers from the build manifest. */\n",
     );
 
     for header in public_headers {
@@ -642,13 +647,14 @@ fn translate_public_api(settings: &Settings, public_headers: &[String]) -> Resul
 
     let output = settings
         .translate_public_api(PUBLIC_API_SOURCE_NAME, &source)
-        .map_err(|error| format!("公開ヘッダを変換できません。\n\n{error}"))?;
+        .map_err(|error| format!("failed to translate public headers.\n\n{error}"))?;
 
-    // 公開 API の翻訳単位は宣言と型だけを持つ。シンボルを定義していると、実装の
-    // 翻訳単位の定義と重なり、利用する側のリンクで失敗する。
+    // The public API translation unit contains only declarations and types. Symbol
+    // definitions would duplicate those in implementation translation units and
+    // cause downstream linking failures.
     if !output.symbols.is_empty() {
         return Err(format!(
-            "公開ヘッダの翻訳単位が、シンボルを定義しています: {:?}",
+            "public header translation unit defines symbols: {:?}",
             output.symbols,
         ));
     }
@@ -656,16 +662,15 @@ fn translate_public_api(settings: &Settings, public_headers: &[String]) -> Resul
     Ok(output)
 }
 
-/// 公開 API が宣言している FFmpeg の関数と変数が、すべて実装の翻訳単位で
-/// 定義されていることを確かめる。
+/// Check that every FFmpeg function and variable declared by the public API is
+/// defined in an implementation translation unit.
 ///
-/// 宣言だけで定義が無い名前は、Rust のコードからは呼べるように見えるが、呼ぶと
-/// 利用する側のリンクで失敗する。このクレートのビルドでは気づけないので、ここで
-/// 確かめる。
+/// Names declared without definitions appear callable from Rust but fail to link
+/// when used downstream. Building this crate cannot detect that, so check here.
 ///
-/// この構成で定義されないと分かっている名前は、[`UNDEFINED_PUBLIC_DECLARATIONS`]
-/// に理由とともに並べる。並べた名前が宣言から消えたり、定義されるようになったり
-/// したら、役目を終えた項目が残らないよう、それも止める。
+/// Names known to lack definitions in this configuration are listed with reasons
+/// in [`UNDEFINED_PUBLIC_DECLARATIONS`]. Also fail if a listed declaration disappears
+/// or gains a definition, so obsolete entries do not remain.
 fn check_public_declarations(public_api: &Translated, translated: &[Translated]) -> Result<()> {
     let defined: BTreeSet<&str> = translated
         .iter()
@@ -687,9 +692,9 @@ fn check_public_declarations(public_api: &Translated, translated: &[Translated])
 
     if !missing.is_empty() {
         return Err(format!(
-            "公開ヘッダが宣言している {} 個の名前が、どの翻訳単位でも定義されていません。\n\
-             構成で無効にした部品の宣言であれば、UNDEFINED_PUBLIC_DECLARATIONS に理由とともに\
-             足してください。\n{missing:?}",
+            "{} names declared by public headers are not defined in any translation unit.\n\
+             If these declarations belong to components disabled in this configuration, \
+             add them to UNDEFINED_PUBLIC_DECLARATIONS with reasons.\n{missing:?}",
             missing.len(),
         ));
     }
@@ -697,8 +702,8 @@ fn check_public_declarations(public_api: &Translated, translated: &[Translated])
     for name in UNDEFINED_PUBLIC_DECLARATIONS {
         if !declared.contains(name) || defined.contains(name) {
             return Err(format!(
-                "UNDEFINED_PUBLIC_DECLARATIONS の {name} は、もう公開ヘッダに宣言が無いか、\
-                 定義されるようになりました。項目を削除してください。"
+                "{name} in UNDEFINED_PUBLIC_DECLARATIONS is no longer declared by public headers \
+                 or now has a definition. Remove the entry."
             ));
         }
     }
@@ -706,15 +711,15 @@ fn check_public_declarations(public_api: &Translated, translated: &[Translated])
     Ok(())
 }
 
-/// 同じ C のシンボルを、2 つ以上の翻訳単位が定義していないことを確かめる。
+/// Check that no C symbol is defined by multiple translation units.
 ///
-/// 翻訳単位は Rust のモジュールとしては別々なので、名前が重なっても rustc は
-/// エラーにしない。重複が分かるのは、最終的な実行ファイルのリンクのときで、
-/// このクレートのビルドだけでは気づけない。
+/// Translation units are separate Rust modules, so rustc does not reject duplicate
+/// names. Duplicates are only detected when linking the final executable, not when
+/// building this crate alone.
 ///
-/// C のビルドでは、静的ライブラリの中で同じシンボルが重複することは無い。
-/// 重複があれば、cinrs が本来シンボルにしない定義（インライン関数など）を
-/// シンボルとして出力している可能性が高い。
+/// A C build does not duplicate symbols within the static library. A duplicate
+/// likely means cinrs emitted a definition that should not be a symbol (such as
+/// an inline function) as a symbol.
 fn check_duplicate_symbols(units: &[Unit], translated: &[Translated]) -> Result<()> {
     let mut owners: BTreeMap<&str, &Unit> = BTreeMap::new();
 
@@ -722,7 +727,7 @@ fn check_duplicate_symbols(units: &[Unit], translated: &[Translated]) -> Result<
         for symbol in &output.symbols {
             if let Some(first) = owners.insert(symbol, unit) {
                 return Err(format!(
-                    "シンボル {symbol} を、{} と {} の両方が定義しています。",
+                    "symbol {symbol} is defined by both {} and {}.",
                     first.source_path(),
                     unit.source_path(),
                 ));
@@ -733,35 +738,34 @@ fn check_duplicate_symbols(units: &[Unit], translated: &[Translated]) -> Result<
     Ok(())
 }
 
-/// 翻訳単位 1 つ分のファイルを組み立てる。cinrs が出力したコードに、説明を付ける。
+/// Assemble a file for one translation unit, adding documentation to cinrs's output.
 fn render_unit(unit: &Unit, rust: &str) -> String {
     format!(
-        "//! FFmpeg の `{}` を、cinrs で Rust に変換したもの。\n\n{rust}\n",
+        "//! FFmpeg `{}` translated to Rust with cinrs.\n\n{rust}\n",
         unit.source_path(),
     )
 }
 
-/// 公開ヘッダを変換したファイルを組み立てる。cinrs が出力したコードに、説明を付ける。
+/// Assemble the translated public header file, adding documentation to cinrs's output.
 fn render_public_api(rust: &str) -> String {
     format!(
-        "//! FFmpeg の公開ヘッダ（ビルドマニフェストの `public_headers`）を、cinrs で\n\
-         //! Rust に変換したもの。\n\
+        "//! FFmpeg public headers (`public_headers` in the build manifest) translated\n\
+         //! to Rust with cinrs.\n\
          //!\n\
-         //! 関数は宣言だけで、実体はライブラリのモジュールの翻訳単位が持つ。両者は\n\
-         //! C のシンボルの名前で繋がる。\n\
+         //! Functions are declarations only; their definitions reside in translation\n\
+         //! units under library modules. They link through C symbol names.\n\
          \n\
          {rust}\n"
     )
 }
 
-/// モジュールの宣言のファイルを組み立てる。`libavutil/time.c` を
-/// `libavutil::time` として読めるように、ライブラリのモジュールの中に、
-/// 翻訳単位のモジュールを宣言する。
+/// Assemble module declarations. Declare each translation unit inside its library's
+/// module so `libavutil/time.c` is accessible as `libavutil::time`.
 ///
-/// 翻訳単位のファイルの場所は、`#[path]` に絶対パスで書く。`include!` で読んだ
-/// ファイルの中の `mod time;` は、`OUT_DIR` ではなく、`include!` を書いた側の
-/// ファイル（`src/lib.rs`）の場所から探されるので、パスを省くと見つからない。
-/// 絶対パスが入るのは `OUT_DIR` の中のこのファイルだけで、配布物には入らない。
+/// Translation unit files use absolute paths in `#[path]`. A `mod time;` inside an
+/// `include!`d file is resolved relative to the including file (`src/lib.rs`), not
+/// `OUT_DIR`, so omitting the path would fail to locate it. Only this file within
+/// `OUT_DIR` contains absolute paths; it is not distributed.
 fn render_root(out_dir: &Path, units: &[Unit]) -> Result<String> {
     let mut by_library: BTreeMap<&str, Vec<&Unit>> = BTreeMap::new();
 
@@ -772,23 +776,23 @@ fn render_root(out_dir: &Path, units: &[Unit]) -> Result<String> {
     let path_literal = |file: PathBuf| -> Result<String> {
         let file = file.to_str().ok_or_else(|| {
             format!(
-                "出力先のパス {} を UTF-8 の文字列にできません",
+                "output path {} cannot be represented as a UTF-8 string",
                 file.display()
             )
         })?;
 
-        // `{:?}` で、パスを Rust の文字列リテラルにする。Windows のパスの
-        // `\` などが、エスケープされる。
+        // `{:?}` renders the path as a Rust string literal, escaping characters such
+        // as `\` in Windows paths.
         Ok(format!("{file:?}"))
     };
 
     let mut out = String::new();
 
-    // 公開 API。クレートのルートに再エクスポートして、`mini_ffmpeg_sys::av_log`
-    // のように使えるようにする。
+    // Re-export the public API at the crate root so users can call it as
+    // `mini_ffmpeg_sys::av_log`.
     let _ = writeln!(
         out,
-        "/// FFmpeg の公開ヘッダを変換したもの。中身をクレートのルートに再エクスポートする。\n\
+        "/// Translated FFmpeg public headers, re-exported at the crate root.\n\
          #[path = {}]\n\
          mod public_api;\n\
          \n\
@@ -797,12 +801,12 @@ fn render_root(out_dir: &Path, units: &[Unit]) -> Result<String> {
     );
 
     for (library, units) in by_library {
-        // 実装の翻訳単位は、利用者に見せるものではないので、ドキュメントから隠す。
-        // 定義は `#[no_mangle]` のシンボルなので、モジュールが見えるかどうかに
-        // 関係なく出力され、公開 API の宣言から使える。
+        // Implementation translation units are not intended for users, so hide them
+        // from documentation. Their `#[no_mangle]` symbols are emitted regardless of
+        // module visibility and remain accessible through public API declarations.
         let _ = writeln!(
             out,
-            "/// {library} の翻訳単位。FFmpeg の `.c` 1 つにつき、モジュールを 1 つ置く。\n\
+            "/// {library} translation units, with one module per FFmpeg `.c` file.\n\
              #[doc(hidden)]\n\
              pub mod {library} {{",
         );
@@ -819,9 +823,9 @@ fn render_root(out_dir: &Path, units: &[Unit]) -> Result<String> {
     Ok(out)
 }
 
-/// `content` を `path` に書き出す。親のディレクトリが無ければ作る。
+/// Write `content` to `path`, creating parent directories if needed.
 fn write_file(path: &Path, content: &str) -> Result<()> {
-    let failed = |error| format!("{} に書き出せません: {error}", path.display());
+    let failed = |error| format!("cannot write to {}: {error}", path.display());
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(failed)?;

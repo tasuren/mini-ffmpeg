@@ -1,34 +1,36 @@
-//! ビルドスクリプトが変換した Rust のコードの中身を、文字列として確かめる。
+//! Inspect Rust code translated by the build script as text.
 //!
-//! 他のテストは、変換後の関数を呼んで動作を見る。ここで見るのは、動作には
-//! 現れない性質で、変換の指定（`build/translate.rs`）が効いているかどうか。
-//! cinrs を更新して、項目の名前や既定値が変わったときに気づけるようにしている。
+//! Other tests call translated functions to check behavior. These tests inspect
+//! properties not observable at runtime, verifying the settings in
+//! `build/translate.rs`. They catch changes in option names or defaults when
+//! cinrs is updated.
 
-/// `libavutil/version.c` を変換したコード。
+/// Translated code from `libavutil/version.c`.
 ///
-/// この翻訳単位は、関数 4 個と変数 1 個を定義するだけで、ヘッダの中身には実質
-/// 何も依存していない。使われない項目が出力されていないかを見るのに向いている。
+/// This unit only defines four functions and one variable, with effectively no
+/// dependencies on header contents. It is useful for checking that unused items
+/// are omitted.
 const VERSION_UNIT: &str = include_str!(concat!(env!("OUT_DIR"), "/libavutil/version.rs"));
 
-/// 翻訳単位が使わない項目が、出力されていないこと。
+/// Check that items unused by the translation unit are omitted.
 ///
-/// `version.c` が include するヘッダには、`av_clip_c`（`static inline` 関数）、
-/// `strcat`（宣言だけの関数）、`AVPixelFormat`（列挙型）があるが、`version.c` は
-/// どれも使っていない。
+/// Headers included by `version.c` contain `av_clip_c` (a `static inline` function),
+/// `strcat` (a function declaration), and `AVPixelFormat` (an enum), but `version.c`
+/// uses none of them.
 ///
-/// この絞り込みが外れても、ビルドもリンクも通り、他のテストも通る。変わるのは
-/// ビルドの時間だけで、出力が約 4 倍に増え、1 分以上長くなる。そのため、
-/// 動作ではなく中身で確かめている。
+/// Without this filtering, building, linking, and other tests still pass. Only build
+/// time changes: output grows roughly fourfold and builds take over a minute longer.
+/// Check the contents rather than runtime behavior for that reason.
 #[test]
 fn unreachable_header_items_are_not_generated() {
     for unused in ["av_clip_c", "strcat", "AVPixelFormat"] {
-        assert!(!VERSION_UNIT.contains(unused), "{unused} が出力されている");
+        assert!(!VERSION_UNIT.contains(unused), "{unused} was emitted");
     }
 }
 
-/// 翻訳単位が定義する関数が、C の名前のシンボルとして出力されていること。
+/// Check that defined functions are emitted as symbols with their C names.
 ///
-/// 絞り込みが行き過ぎて、必要な定義まで消えていないことの確認でもある。
+/// This also checks that filtering does not remove required definitions.
 #[test]
 fn defined_functions_are_exported() {
     assert!(VERSION_UNIT.contains("no_mangle"));
@@ -39,25 +41,22 @@ fn defined_functions_are_exported() {
         "avutil_configuration",
         "avutil_license",
     ] {
-        assert!(
-            VERSION_UNIT.contains(defined),
-            "{defined} が出力されていない"
-        );
+        assert!(VERSION_UNIT.contains(defined), "{defined} was not emitted");
     }
 }
 
-/// 生成物に、ビルドしたマシンの絶対パスが入っていないこと。
+/// Check that generated files do not contain absolute build-machine paths.
 ///
-/// cinrs は、渡されたパスをそのまま `__FILE__` の文字列にする。`mem.c` は
-/// `av_assert0` で `__FILE__` を使うので、絶対パスで渡していれば、ここに現れる。
-/// 絶対パスが入ると、利用者の実行ファイルに、ビルドしたマシンのパスが残る。
+/// cinrs uses supplied paths unchanged in `__FILE__`. `mem.c` uses `__FILE__` in
+/// `av_assert0`, so an absolute path would appear here and remain in users'
+/// executables.
 #[test]
 fn source_paths_are_relative() {
     let mem_unit = include_str!(concat!(env!("OUT_DIR"), "/libavutil/mem.rs"));
 
     assert!(
         mem_unit.contains("FFmpeg/libavutil/"),
-        "`__FILE__` の文字列が無い"
+        "missing `__FILE__` string"
     );
     assert!(!mem_unit.contains(env!("CARGO_MANIFEST_DIR")));
 }
