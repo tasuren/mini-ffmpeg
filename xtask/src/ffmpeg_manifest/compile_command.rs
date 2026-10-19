@@ -1,56 +1,58 @@
-//! `make -n V=1` が表示するコマンドから、C のコンパイルコマンドを読み取る。
+//! Read C compile commands from the commands printed by `make -n V=1`.
 //!
-//! FFmpeg の `ffbuild/common.mak` は、コンパイルコマンドを次の形で組み立てる。
+//! FFmpeg's `ffbuild/common.mak` constructs compile commands in this form:
 //!
 //! ```make
-//! $(CC) $(CCFLAGS) $(CC_DEPFLAGS) $(CC_C) $(CC_O) <ソース>
+//! $(CC) $(CCFLAGS) $(CC_DEPFLAGS) $(CC_C) $(CC_O) <source>
 //! ```
 //!
-//! `CC_C` は `-c`、`CC_O` は `-o <オブジェクト>` なので、コマンドは必ず
-//! `... -c -o foo.o src/foo.c` の形で終わる。ここではその形を前提に、
-//! オブジェクト、ソース、プリプロセスに影響するフラグを取り出す。
+//! `CC_C` is `-c` and `CC_O` is `-o <object>`, so commands always end with
+//! `... -c -o foo.o src/foo.c`. This parser assumes that form to extract the object,
+//! source, and flags that affect preprocessing.
 //!
-//! MSVC（`--toolchain=msvc`）では、`configure` が `CC_O` を `-Fo<オブジェクト>` に、
-//! C の規格の指定を `/std:c17` にする。オブジェクトのパスが別の語にならないので、
-//! この形も読めるようにしている。
+//! For MSVC (`--toolchain=msvc`), `configure` sets `CC_O` to `-Fo<object>` and the
+//! C standard option to `/std:c17`. The object path is not a separate word in this
+//! form, which the parser also supports.
 
 use std::path::Path;
 
 use crate::Result;
 
-/// 1 つの翻訳単位をコンパイルするコマンド。
+/// A command that compiles one translation unit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompileCommand {
-    /// 出力されるオブジェクトファイル。ビルドディレクトリからの相対パス。
+    /// The output object file, relative to the build directory.
     pub object: String,
 
-    /// コンパイルされるソース。コマンドに書かれていた通りのパス。
+    /// The source to compile, with its path as written in the command.
     pub source: String,
 
     pub flags: CompileFlags,
 }
 
-/// コンパイルコマンドのうち、プリプロセスの結果を左右するフラグ。
+/// Compile command flags that affect preprocessing.
 ///
-/// cinrs で同じ翻訳単位を再現するために必要なものだけを持つ。最適化や警告の
-/// フラグは cinrs の側に対応するものが無いので、意図的に捨てている。
+/// Only the flags needed to reproduce the translation unit in cinrs are retained.
+/// Optimization and warning flags are deliberately discarded because cinrs has no
+/// equivalent options.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CompileFlags {
-    /// `-std=`（MSVC では `/std:`）の値。
+    /// The value of `-std=` (`/std:` for MSVC).
     pub std: Option<String>,
 
-    /// `-D` の値。`NAME` または `NAME=VALUE` の形で、コマンドに現れた順。
+    /// The values of `-D`, as `NAME` or `NAME=VALUE`, in command order.
     pub defines: Vec<String>,
 
-    /// `-I` の値。コマンドに書かれていた通りのパスで、現れた順。
-    /// インクルードの探索は順序に意味があるので、並べ替えない。
+    /// The values of `-I`, with paths as written in the command, in command order.
+    /// Do not sort them: include search order matters.
     pub include_dirs: Vec<String>,
 }
 
-/// プリプロセスの結果を左右するが、まだ扱っていないフラグ。
+/// Flags that affect preprocessing but are not yet supported.
 ///
-/// これらを黙って捨てると、cinrs で取り込んだときに元のビルドと違う内容に
-/// なっても気づけない。現れたらエラーにして、対応を足すきっかけにする。
+/// Silently discarding these flags could make cinrs translate different code from
+/// the original build without detection. Reject them so support can be added when
+/// needed.
 const UNSUPPORTED_FLAGS: &[&str] = &[
     "-U",
     "-include",
@@ -58,22 +60,22 @@ const UNSUPPORTED_FLAGS: &[&str] = &[
     "-isystem",
     "-iquote",
     "-idirafter",
-    // MSVC の強制インクルード。`-include` に当たる。
+    // MSVC forced includes, equivalent to `-include`.
     "-FI",
     "/FI",
 ];
 
-/// コマンド 1 行を読み、C のコンパイルコマンドであればその内容を返す。
+/// Parse one command line and return its contents if it is a C compile command.
 ///
-/// コンパイル以外のコマンド（`ar` や各種スクリプトなど）には `Ok(None)` を返す。
+/// Return `Ok(None)` for other commands, such as `ar` or scripts.
 ///
-/// コンパイルコマンドではあるが、そのまま取り込むと元のビルドを再現できない
-/// 場合はエラーにする。C 以外のソース（アセンブリなど）をコンパイルしている
-/// 場合と、[`UNSUPPORTED_FLAGS`] が使われている場合がこれに当たる。
+/// Reject compile commands that cannot reproduce the original build when translated
+/// as-is: those compiling non-C sources (such as assembly) or using
+/// [`UNSUPPORTED_FLAGS`].
 pub fn parse_line(line: &str) -> Result<Option<CompileCommand>> {
-    // 引用符が閉じていない行は、コマンドとして解釈できないので対象外にする。
-    // コンパイルコマンドを取りこぼした場合は、ビルド後にオブジェクトファイルの
-    // 一覧と突き合わせる検査で検出される。
+    // Ignore lines with unterminated quotes, which cannot be parsed as commands.
+    // If a compile command is missed, the check against the object files after the
+    // build will detect it.
     let Some(words) = split_shell_words(line) else {
         return Ok(None);
     };
@@ -82,12 +84,14 @@ pub fn parse_line(line: &str) -> Result<Option<CompileCommand>> {
         return Ok(None);
     };
 
-    let source = words.last().expect("オブジェクトがあるなら語は空でない");
+    let source = words
+        .last()
+        .expect("an object implies a nonempty word list");
 
     if Path::new(source).extension().is_none_or(|ext| ext != "c") {
         return Err(format!(
-            "C 以外のソースがコンパイルされています: {source}\n\
-             cinrs が取り込めるのは C だけなので、アセンブリなどを使わない構成にしてください。"
+            "a non-C source is being compiled: {source}\n\
+             cinrs can only translate C; use a configuration without assembly or other languages."
         )
         .into());
     }
@@ -99,8 +103,8 @@ pub fn parse_line(line: &str) -> Result<Option<CompileCommand>> {
     }))
 }
 
-/// コンパイルコマンド（`-c` と、`-o <何か>.o` または `-Fo<何か>.o` を持つ）で
-/// あれば、オブジェクトのパスを返す。
+/// Return the object path for a compile command (one containing `-c` and either
+/// `-o <name>.o` or `-Fo<name>.o`).
 fn find_object(words: &[String]) -> Option<&str> {
     if !words.iter().any(|word| word == "-c") {
         return None;
@@ -129,7 +133,7 @@ fn parse_flags(words: &[String]) -> Result<CompileFlags> {
             .find(|flag| word.starts_with(**flag))
         {
             return Err(format!(
-                "未対応のフラグ {unsupported} がコンパイルコマンドに含まれています: {word}"
+                "the compile command contains unsupported flag {unsupported}: {word}"
             )
             .into());
         }
@@ -149,8 +153,8 @@ fn parse_flags(words: &[String]) -> Result<CompileFlags> {
     Ok(flags)
 }
 
-/// `-Dfoo` と `-D foo` のように、値を続けて書く形と次の語に書く形の両方から
-/// 値を取り出す。`word` が `flag` で始まらなければ `Ok(None)` を返す。
+/// Extract a flag value from either an attached form (`-Dfoo`) or a separate word
+/// (`-D foo`). Return `Ok(None)` if `word` does not start with `flag`.
 fn flag_value<'a>(
     word: &'a str,
     flag: &str,
@@ -166,7 +170,7 @@ fn flag_value<'a>(
 
     match rest.next() {
         Some(value) => Ok(Some(value.clone())),
-        None => Err(format!("{flag} の値がありません").into()),
+        None => Err(format!("missing value for {flag}").into()),
     }
 }
 
@@ -176,17 +180,17 @@ fn push_unique(values: &mut Vec<String>, value: String) {
     }
 }
 
-/// コマンド 1 行を、シェルの規則に沿って語に分割する。
+/// Split one command line into words using shell rules.
 ///
-/// 扱うのは、`make` が表示するコマンドに現れる範囲の引用符とバックスラッシュ
-/// だけで、変数展開などは解釈しない。引用符が閉じていないなど、分割できない
-/// 行には `None` を返す。
+/// Only quotes and backslashes as used in commands printed by `make` are handled;
+/// variable expansion and other shell features are not interpreted. Return `None`
+/// for lines that cannot be split, such as those with unterminated quotes.
 pub(super) fn split_shell_words(line: &str) -> Option<Vec<String>> {
     let mut words = Vec::new();
     let mut current = String::new();
 
-    // 空の引用符（`""`）も 1 つの語になるので、文字列が空かどうかとは別に、
-    // 語の途中かどうかを持つ。
+    // Empty quotes (`""`) also form a word, so track whether a word is in progress
+    // separately from whether the string is empty.
     let mut in_word = false;
     let mut characters = line.chars().peekable();
 
@@ -210,7 +214,7 @@ pub(super) fn split_shell_words(line: &str) -> Option<Vec<String>> {
                     match characters.next()? {
                         '"' => break,
 
-                        // 二重引用符の中では、`\` は特定の文字の前でだけエスケープになる。
+                        // Inside double quotes, `\` only escapes certain characters.
                         '\\' if matches!(characters.peek(), Some('"' | '\\' | '$' | '`')) => {
                             current.push(characters.next()?);
                         }
@@ -250,8 +254,8 @@ pub(super) fn split_shell_words(line: &str) -> Option<Vec<String>> {
 mod tests {
     use super::*;
 
-    /// `n9.0.2` の FFmpeg を macOS でビルドしたときの実際のコマンドから、警告のフラグを
-    /// 省いたもの。
+    /// An actual command from building FFmpeg `n9.0.2` on macOS, with warning flags
+    /// removed.
     const REAL_COMMAND: &str = "gcc -I. -Isrc/ -D_ISOC11_SOURCE -D_FILE_OFFSET_BITS=64 \
         -D_LARGEFILE_SOURCE -I/work/FFmpeg/compat/dispatch_semaphore -DPIC \
         -I/work/FFmpeg/compat/stdbit -DHAVE_AV_CONFIG_H -std=c17 -fomit-frame-pointer \
@@ -286,8 +290,8 @@ mod tests {
         );
     }
 
-    /// `n9.0.2` の FFmpeg を Windows で `--toolchain=msvc` を付けて構成したときの
-    /// 実際のコマンドから、警告のフラグを省き、パスを短くしたもの。
+    /// An actual command from configuring FFmpeg `n9.0.2` on Windows with
+    /// `--toolchain=msvc`, with warning flags removed and paths shortened.
     const REAL_MSVC_COMMAND: &str = "cl.exe -I. -I/work/FFmpeg/ -D_ISOC11_SOURCE \
         -DWIN32_LEAN_AND_MEAN -D_WIN32_WINNT=0x0600 -I/work/FFmpeg/compat/atomics/win32 \
         -DHAVE_AV_CONFIG_H -nologo -options:strict  /std:c17  -Z7 -O2   -utf-8    \
@@ -315,8 +319,8 @@ mod tests {
         );
     }
 
-    /// MSVC では、依存関係ファイルを `-showIncludes -Zs` によるプリプロセスだけの
-    /// 実行で作る。コンパイルではないので、翻訳単位として数えないこと。
+    /// MSVC creates dependency files with a preprocessing-only invocation using
+    /// `-showIncludes -Zs`. Do not count it as a translation unit: it does not compile.
     #[test]
     fn ignores_msvc_dependency_command() {
         let line = "cl.exe -I. -DHAVE_AV_CONFIG_H -showIncludes -Zs -nologo /std:c17 \
@@ -326,8 +330,8 @@ mod tests {
         assert_eq!(parse_line(line).unwrap(), None);
     }
 
-    /// `make -n` の出力には、アーカイブの作成やスクリプトの実行など、コンパイル
-    /// 以外のコマンドが混ざる。これらを翻訳単位として数えないこと。
+    /// `make -n` also prints non-compile commands, such as archive creation and script
+    /// execution. Do not count them as translation units.
     #[test]
     fn ignores_commands_that_do_not_compile() {
         let lines = [
@@ -343,9 +347,10 @@ mod tests {
         }
     }
 
-    /// アセンブリを無効にし忘れた構成では `.S` などがコンパイルされる。cinrs では
-    /// 取り込めないので、cinrs_manifest.tomlから黙って落とさずにエラーにする。落とすと、
-    /// リンク時に未定義シンボルになるまで気づけない。
+    /// A configuration that leaves assembly enabled compiles `.S` and similar files.
+    /// cinrs cannot translate them, so reject them rather than silently dropping them
+    /// from cinrs_manifest.toml. Otherwise, the issue would only surface as undefined
+    /// symbols at link time.
     #[test]
     fn rejects_non_c_source() {
         let line = "gcc -I. -c -o libavutil/aarch64/cpu.o src/libavutil/aarch64/asm.S";
@@ -353,8 +358,9 @@ mod tests {
         assert!(parse_line(line).is_err());
     }
 
-    /// 強制インクルードなどは翻訳単位の内容を変える。扱いを決めていないフラグを
-    /// 無視してcinrs_manifest.tomlを作ると、元のビルドと違うものを取り込むことになる。
+    /// Forced includes and similar flags change translation unit contents. Ignoring
+    /// unsupported flags when writing cinrs_manifest.toml would make cinrs translate
+    /// code that differs from the original build.
     #[test]
     fn rejects_unsupported_preprocessor_flags() {
         for flag in [
@@ -380,8 +386,8 @@ mod tests {
         assert_eq!(command.flags.include_dirs, ["include"]);
     }
 
-    /// 同じフラグが複数回現れても 1 つにまとめ、最初に現れた位置を保つこと。
-    /// インクルードの探索順を変えないため。
+    /// Deduplicate repeated flags while preserving their first occurrence so the
+    /// include search order does not change.
     #[test]
     fn deduplicates_flags_keeping_first_position() {
         let command = parse_line("gcc -Ia -Ib -Ia -DX -DX -c -o a.o src/a.c")

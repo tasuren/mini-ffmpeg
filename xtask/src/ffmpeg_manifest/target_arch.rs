@@ -1,31 +1,30 @@
-//! `configure` が使うコンパイラの、ターゲットの CPU アーキテクチャの判定。
+//! Determine the target CPU architecture of the compiler used by `configure`.
 //!
-//! `--disable-asm` の構成では、`configure` は `ARCH=c` とし、`config.h` の
-//! `ARCH_*` をすべて 0 にする。そのため、ビルドの結果からはアーキテクチャが
-//! 分からない。また、xtask 自身のアーキテクチャとも一致するとは限らない。
-//! ARM64 の Windows で、x64 の `cl.exe` を使う場合などがある。
+//! With `--disable-asm`, `configure` sets `ARCH=c` and all `ARCH_*` values in
+//! `config.h` to 0, so the build results do not reveal the architecture. It may also
+//! differ from xtask's architecture, for example when using x64 `cl.exe` on ARM64
+//! Windows.
 //!
-//! そこで、コンパイラが事前に定義するマクロで分岐する小さなソースを、FFmpeg の
-//! Makefile の `%.i: %.c` の規則でプリプロセスする。この規則は
-//! `$(CC) $(CCFLAGS) $(CC_E) $<` なので、`configure` が決めたコンパイラとフラグが
-//! そのまま使われる。
+//! Preprocess a small source that branches on compiler-predefined macros using
+//! FFmpeg's `%.i: %.c` Makefile rule. The rule runs
+//! `$(CC) $(CCFLAGS) $(CC_E) $<`, preserving the compiler and flags chosen by
+//! `configure`.
 
 use crate::Result;
 
-/// プリプロセスするソースのファイル名。ビルドディレクトリに置く。
+/// The source file to preprocess, placed in the build directory.
 pub const PROBE_SOURCE: &str = "xtask-target-arch.c";
 
-/// [`PROBE_SOURCE`] をプリプロセスした結果のファイル名。`make` のターゲット。
+/// The output file from preprocessing [`PROBE_SOURCE`], used as a `make` target.
 pub const PROBE_OUTPUT: &str = "xtask-target-arch.i";
 
-/// 名前は Rust の `CARGO_CFG_TARGET_ARCH` の値に揃える。`triple` モジュールが、
-/// ターゲットトリプルのアーキテクチャと比べるため。
+/// Use Rust's `CARGO_CFG_TARGET_ARCH` names so the `triple` module can compare them
+/// with the architecture in the target triple.
 ///
-/// 名前を文字列リテラルに入れているのは、マクロとして展開されないようにするため。
-/// `x86_64` のような識別子のままだと、コンパイラによっては定義済みのマクロに
-/// 当たりうる。
+/// Put the names in string literals to prevent macro expansion. Bare identifiers
+/// such as `x86_64` could match predefined macros in some compilers.
 ///
-/// ARM64EC の MSVC は `_M_X64` も定義するので、`_M_ARM64EC` を先に除く。
+/// MSVC for ARM64EC also defines `_M_X64`, so exclude `_M_ARM64EC` first.
 pub const PROBE: &str = r#"#if defined(_M_ARM64EC)
 const char *xtask_target_arch = "";
 #elif defined(__x86_64__) || defined(_M_X64)
@@ -43,18 +42,16 @@ const char *xtask_target_arch = "";
 #endif
 "#;
 
-/// [`PROBE`] をプリプロセスした結果から、アーキテクチャの名前を取り出す。
+/// Extract the architecture name from the preprocessed [`PROBE`].
 pub fn parse_preprocessed(output: &str) -> Result<String> {
     let arch = output
         .lines()
         .find(|line| line.contains("xtask_target_arch"))
         .and_then(|line| line.split('"').nth(1))
-        .ok_or("プリプロセスの結果に xtask_target_arch がありません")?;
+        .ok_or("preprocessed output does not contain xtask_target_arch")?;
 
     if arch.is_empty() {
-        return Err(
-            "コンパイラのターゲットのアーキテクチャが、判定できるものではありません".into(),
-        );
+        return Err("cannot identify the compiler target architecture".into());
     }
 
     Ok(arch.to_owned())
@@ -64,8 +61,8 @@ pub fn parse_preprocessed(output: &str) -> Result<String> {
 mod tests {
     use super::*;
 
-    /// `cl.exe -P -EP` は行番号の指示を出さないが、gcc や clang の `-E` は出す。
-    /// どちらの形からも読めること。
+    /// `cl.exe -P -EP` omits line directives, whereas gcc and clang with `-E` emit them.
+    /// Read either form.
     #[test]
     fn reads_arch_from_preprocessed_output() {
         let msvc = "\n\nconst char *xtask_target_arch = \"x86_64\";\n\n";

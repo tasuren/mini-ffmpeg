@@ -6,6 +6,6 @@ license.workspace = true
 publish = false
 
 [dependencies]
-# `cinrs_manifest.toml` の読み取り用。書き出しは文字列の組み立てで済ませているので、
-# 読み取りに要る機能だけを有効にしている。
+# Used to read `cinrs_manifest.toml`. Writing only requires building strings,
+# so only the features needed for reading are enabled.
 toml = { version = "1", default-features = false, features = ["parse", "serde", "std"] }

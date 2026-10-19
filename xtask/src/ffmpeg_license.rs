@@ -1,7 +1,8 @@
-//! ビルドマニフェストが列挙する FFmpeg 入力を licensecheck で全文検査する。
+//! Scan the full contents of FFmpeg inputs listed in the build manifest with licensecheck.
 //!
-//! 自動検出値をそのまま保存し、IJG の補完や複数ライセンスの法的な解釈は行わない。
-//! Docker の Debian は検査環境にだけ使い、FFmpeg の構成は変更しない。
+//! Preserve detected values as-is, without supplementing IJG detection or legally
+//! interpreting multiple licenses. Debian in Docker is only the scanning environment;
+//! it does not change the FFmpeg configuration.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -31,25 +32,26 @@ const SCAN_ARGS: &[&str] = &[
 ];
 
 const HELP: &str =
-    "使い方: cargo xtask ffmpeg-license --target TRIPLE [--docker | --native] [--output DIR]
+    "Usage: cargo xtask ffmpeg-license --target TRIPLE [--docker | --native] [--output DIR]
 
---target は必須。mini-ffmpeg-sys/FFmpeg_build/ にある、ターゲットトリプルの構成を検査する。
-構成はターゲットごとに違い、検査結果もそのターゲットのものでしかない。ターゲットを
-省略して通ると、mini-ffmpeg 全体で使われうる入力の検査と誤解されるので、省略を許さない。
+--target is required. Scan the configuration for that target triple under
+mini-ffmpeg-sys/FFmpeg_build/. Configurations and results are target-specific.
+Requiring a target avoids implying that all inputs potentially used by mini-ffmpeg
+have been scanned.
 
-Linux は PATH の licensecheck を直接実行し、それ以外の OS は Docker を使う。
---docker / --native で実行方法を指定できる（自動フォールバックはしない）。
-Docker は Debian trixie の検査用イメージをビルドし、キャッシュして使う。
-初回はイメージとパッケージの取得にネットワークが必要。
-Linux の直接実行には licensecheck のインストールが必要（Debian: apt install licensecheck）。
-既定の出力先: target/xtask/ffmpeg-license/TRIPLE（--output は作業ディレクトリ基準）。
-出力: report.md、licensecheck.tsv、versions.txt、manifest.toml。
-検査対象はビルドマニフェストの sources 全体。システムヘッダと Cargo 依存は含まない。";
+Linux runs licensecheck from PATH directly; other operating systems use Docker.
+Use --docker / --native to select the mode explicitly (there is no automatic fallback).
+Docker builds and caches a Debian trixie image for scanning.
+The first run requires network access to download the image and packages.
+Native execution on Linux requires licensecheck (Debian: apt install licensecheck).
+Default output: target/xtask/ffmpeg-license/TRIPLE (--output is relative to the working directory).
+Output files: report.md, licensecheck.tsv, versions.txt, manifest.toml.
+The scan covers all sources in the build manifest, excluding system headers and Cargo dependencies.";
 
-/// 明示指定が無ければ、Linux だけローカルのツールを使う。
+/// Use the local tool by default only on Linux, unless explicitly overridden.
 #[derive(Debug)]
 struct Options {
-    /// 検査する構成のターゲットトリプル。
+    /// The target triple of the configuration to scan.
     target: String,
     docker: bool,
     output: PathBuf,
@@ -70,34 +72,31 @@ impl Options {
             match arg.as_str() {
                 "--docker" | "--native" => {
                     if mode.is_some() {
-                        return Err("--docker / --native は一度だけ指定してください".into());
+                        return Err("specify --docker / --native only once".into());
                     }
                     mode = Some(arg == "--docker");
                 }
                 "--output" => {
-                    output = Some(PathBuf::from(
-                        args.next().ok_or("--output に DIR が必要です")?,
-                    ));
+                    output = Some(PathBuf::from(args.next().ok_or("--output requires DIR")?));
                 }
                 "--target" => {
-                    target = Some(args.next().ok_or("--target に TRIPLE が必要です")?.clone());
+                    target = Some(args.next().ok_or("--target requires TRIPLE")?.clone());
                 }
-                _ => return Err(format!("未知の引数です: {arg}\n\n{HELP}").into()),
+                _ => return Err(format!("unknown argument: {arg}\n\n{HELP}").into()),
             }
         }
 
         let target = target.ok_or_else(|| {
             format!(
-                "--target が必要です。選べるターゲット: {}\n\n{HELP}",
-                available_targets()
-                    .map_or_else(|_| "（取得できません）".to_owned(), |t| t.join(", ")),
+                "--target is required. Available targets: {}\n\n{HELP}",
+                available_targets().map_or_else(|_| "(unavailable)".to_owned(), |t| t.join(", ")),
             )
         })?;
 
         validate_target(&target)?;
 
-        // ターゲットごとに分ける。同じ場所に書くと、別のターゲットの結果を
-        // 上書きして、どのターゲットの検査かが分からなくなる。
+        // Separate output by target. Sharing a location would overwrite another target's
+        // results and obscure which target was scanned.
         let output = match output {
             Some(output) => output,
             None => workspace_root()?
@@ -113,10 +112,10 @@ impl Options {
     }
 }
 
-/// `--target` の値が、ディレクトリ名として安全なトリプルであることを確かめる。
+/// Check that `--target` is a triple safe to use as a directory name.
 ///
-/// 値はそのままパスに連結するので、`..` や区切り文字を含むものを通すと、
-/// 構成の外のファイルを検査対象にできてしまう。
+/// The value is joined directly onto a path, so accepting `..` or separators would
+/// allow files outside the configuration to be scanned.
 fn validate_target(target: &str) -> Result<()> {
     let plain = !target.is_empty()
         && target
@@ -125,13 +124,13 @@ fn validate_target(target: &str) -> Result<()> {
         && !target.starts_with('.');
 
     if !plain {
-        return Err(format!("不正なターゲットです: {target:?}").into());
+        return Err(format!("invalid target: {target:?}").into());
     }
 
     Ok(())
 }
 
-/// 検査完了と入力集合の一致を確認してから、結果を出力する。
+/// Write results only after confirming scan completion and that the input set matches.
 pub fn run(args: &[String]) -> Result<()> {
     let Some(options) = Options::parse(args)? else {
         println!("{HELP}");
@@ -144,16 +143,16 @@ pub fn run(args: &[String]) -> Result<()> {
 
     let manifest = fs::read_to_string(&manifest_path).map_err(|error| {
         format!(
-            "{} を読めません: {error}\n選べるターゲット: {}",
+            "cannot read {}: {error}\nAvailable targets: {}",
             manifest_path.display(),
-            available_targets().map_or_else(|_| "（取得できません）".to_owned(), |t| t.join(", ")),
+            available_targets().map_or_else(|_| "(unavailable)".to_owned(), |t| t.join(", ")),
         )
     })?;
     let inputs = inputs(&manifest, &generated_dir)?;
 
     for path in inputs.keys() {
         if !root.join(path).is_file() {
-            return Err(format!("検査対象がありません: {}", root.join(path).display()).into());
+            return Err(format!("scan input is missing: {}", root.join(path).display()).into());
         }
     }
 
@@ -172,23 +171,23 @@ pub fn run(args: &[String]) -> Result<()> {
     fs::write(options.output.join("report.md"), report)?;
 
     println!(
-        "{} ファイルを検査しました: {}",
+        "Scanned {} files: {}",
         inputs.len(),
         options.output.display()
     );
     Ok(())
 }
 
-/// ビルドマニフェストの分類を保持しつつ、クレート基準のパスで重複を除く。
+/// Deduplicate crate-relative paths while preserving build manifest categories.
 ///
-/// 生成物のパスの基準は `generated_dir`（クレートからの相対パスで、
-/// `FFmpeg_build/<トリプル>` の形）。
+/// Generated file paths are based in `generated_dir`, a crate-relative path of the
+/// form `FFmpeg_build/<triple>`.
 fn inputs(manifest: &str, generated_dir: &str) -> Result<BTreeMap<String, String>> {
     let table: toml::Table = manifest.parse()?;
     let sources = table
         .get("sources")
         .and_then(toml::Value::as_table)
-        .ok_or("manifest に [sources] がありません")?;
+        .ok_or("manifest is missing [sources]")?;
     let mut inputs = BTreeMap::new();
 
     for category in [
@@ -200,7 +199,7 @@ fn inputs(manifest: &str, generated_dir: &str) -> Result<BTreeMap<String, String
         let paths = sources
             .get(category)
             .and_then(toml::Value::as_array)
-            .ok_or_else(|| format!("sources.{category} の配列がありません"))?;
+            .ok_or_else(|| format!("missing sources.{category} array"))?;
         let prefix = if category == "generated" {
             generated_dir
         } else {
@@ -208,30 +207,29 @@ fn inputs(manifest: &str, generated_dir: &str) -> Result<BTreeMap<String, String
         };
 
         for value in paths {
-            let path = value
-                .as_str()
-                .ok_or("ファイルのパスが文字列ではありません")?;
-            // ビルドマニフェストのパスは OS に依存しない '/' 区切り。検査対象がマウント外や
-            // TSV の別行に逃げないよう、曖昧な要素と制御文字を受け付けない。
+            let path = value.as_str().ok_or("file path is not a string")?;
+            // Build manifest paths use OS-independent '/' separators. Reject ambiguous
+            // components and control characters so scanned paths cannot escape the mount or
+            // create extra TSV lines.
             if path.is_empty()
                 || path.contains('\\')
                 || path.contains(':')
                 || path.chars().any(char::is_control)
                 || path.split('/').any(|part| matches!(part, "" | "." | ".."))
             {
-                return Err(format!("不正な manifest パスです: {path:?}").into());
+                return Err(format!("invalid manifest path: {path:?}").into());
             }
             inputs.insert(format!("{prefix}/{path}"), category.to_owned());
         }
     }
 
     if inputs.is_empty() {
-        return Err("manifest の検査対象が空です".into());
+        return Err("manifest has no scan inputs".into());
     }
     Ok(inputs)
 }
 
-/// 失敗時に部分的な標準出力を成功した検査結果として扱わない。
+/// Do not treat partial stdout from a failed command as a successful scan result.
 fn capture(command: &mut Command, input: Option<&[u8]>) -> Result<String> {
     command.stdout(Stdio::piped()).stderr(Stdio::inherit());
     command.stdin(if input.is_some() {
@@ -241,9 +239,9 @@ fn capture(command: &mut Command, input: Option<&[u8]>) -> Result<String> {
     });
     let mut child = command
         .spawn()
-        .map_err(|error| format!("{command:?} を実行できません: {error}"))?;
-    // 大きい入力一覧と検査結果を同時に流せるよう、stdin の書き込み中にも
-    // stdout を読み取る。パイプの容量に依存したデッドロックを避ける。
+        .map_err(|error| format!("cannot run {command:?}: {error}"))?;
+    // Read stdout while writing stdin so large input lists and scan results can flow
+    // simultaneously, avoiding deadlocks caused by pipe capacity limits.
     let output = std::thread::scope(|scope| -> Result<_> {
         let writer = input.map(|input| {
             let mut stdin = child.stdin.take().expect("piped stdin");
@@ -251,15 +249,13 @@ fn capture(command: &mut Command, input: Option<&[u8]>) -> Result<String> {
         });
         let output = child.wait_with_output()?;
         if let Some(writer) = writer {
-            writer
-                .join()
-                .map_err(|_| "stdin 書き込みスレッドが失敗しました")??;
+            writer.join().map_err(|_| "stdin writer thread failed")??;
         }
         Ok(output)
     })?;
 
     if !output.status.success() {
-        return Err(format!("{command:?} が失敗しました: {}", output.status).into());
+        return Err(format!("{command:?} failed: {}", output.status).into());
     }
     Ok(String::from_utf8(output.stdout)?)
 }
@@ -278,8 +274,8 @@ fn native_scan(root: &Path, inputs: &BTreeMap<String, String>) -> Result<(String
     let paths: Vec<_> = inputs.keys().collect();
     let mut scan = String::new();
 
-    // Windows のコマンドライン長にも収まるように分割する。ファイル名は shell を
-    // 経由せず別々の引数として渡すため、空白があっても検査対象は変わらない。
+    // Split inputs to also fit Windows command-line length limits. Pass filenames as
+    // separate arguments without a shell, so spaces do not change the scanned files.
     for chunk in paths.chunks(16) {
         scan.push_str(&capture(
             native_command(root).args(SCAN_ARGS).arg("--").args(chunk),
@@ -302,7 +298,7 @@ fn docker_command(root: &Path) -> Command {
 }
 
 fn docker_scan(root: &Path, inputs: &BTreeMap<String, String>) -> Result<(String, String)> {
-    eprintln!("Debian の licensecheck イメージを準備します（Docker のキャッシュを使用）");
+    eprintln!("Preparing the Debian licensecheck image (using the Docker cache)");
     capture(
         Command::new("docker").args(["build", "--tag", IMAGE, "-"]),
         Some(DOCKERFILE.as_bytes()),
@@ -313,7 +309,7 @@ fn docker_scan(root: &Path, inputs: &BTreeMap<String, String>) -> Result<(String
         .keys()
         .flat_map(|path| path.bytes().chain([0]))
         .collect();
-    // NUL 区切りでファイル名を渡す。xargs は argv 長を制限し、失敗を終了コードで伝える。
+    // Pass NUL-separated filenames. xargs limits argv length and reports failures through its exit code.
     let scan = capture(
         docker_command(root)
             .args(["xargs", "-0", "-r", "-n", "16", "licensecheck"])
@@ -324,7 +320,7 @@ fn docker_scan(root: &Path, inputs: &BTreeMap<String, String>) -> Result<(String
     Ok((versions, scan))
 }
 
-/// licensecheck の TSV が入力集合を過不足なく含むことを検証する。
+/// Verify that the licensecheck TSV contains exactly the input set.
 fn validate_scan<'a>(
     scan: &'a str,
     inputs: &BTreeMap<String, String>,
@@ -334,10 +330,10 @@ fn validate_scan<'a>(
     for line in scan.lines() {
         let fields: Vec<_> = line.splitn(3, '\t').collect();
         if fields.len() != 3 || fields[1].is_empty() || !inputs.contains_key(fields[0]) {
-            return Err(format!("予期しない licensecheck 出力です: {line:?}").into());
+            return Err(format!("unexpected licensecheck output: {line:?}").into());
         }
         if rows.insert(fields[0], (fields[1], fields[2])).is_some() {
-            return Err(format!("検査結果が重複しています: {}", fields[0]).into());
+            return Err(format!("duplicate scan result: {}", fields[0]).into());
         }
     }
 
@@ -346,7 +342,7 @@ fn validate_scan<'a>(
             .keys()
             .filter(|p| !rows.contains_key(p.as_str()))
             .collect();
-        return Err(format!("検査結果に不足があります: {missing:?}").into());
+        return Err(format!("scan results are missing inputs: {missing:?}").into());
     }
     Ok(rows)
 }
@@ -362,7 +358,7 @@ fn report(
         groups.entry(license).or_default().push(path);
     }
     let mut out = format!(
-        "# FFmpeg licensecheck report\n\nターゲット: {}。実行方法: {}。対象: {} ファイル。\n\nビルドマニフェストの sources（翻訳単位・include 専用ソース・ヘッダ・生成物）を全文検査。\nシステムヘッダ、cinrs / Cargo 依存、ビルドマニフェスト外のファイルは対象外。\nプリプロセッサの分岐や最終バイナリへの到達性は判定しない。\n\nUNKNOWN はライセンス不適用を意味しない。IJG の表示も UNKNOWN になる場合がある。\nand/or は検出ツールの出力であり、選択可能なライセンスや確定した SPDX 式を意味しない。\n\n検査オプション: `{}`\n\n## ツールのバージョン\n\n```text\n{}\n```\n\n## 集計\n\n| 検出値 | ファイル数 |\n| --- | ---: |\n",
+        "# FFmpeg licensecheck report\n\nTarget: {}. Mode: {}. Inputs: {} files.\n\nThe full contents of the build manifest's sources (translation units, include-only sources, headers, and generated files) are scanned.\nSystem headers, cinrs / Cargo dependencies, and files outside the build manifest are excluded.\nPreprocessor branches and reachability in the final binary are not evaluated.\n\nUNKNOWN does not mean that no license applies. IJG notices may also be reported as UNKNOWN.\nand/or reflects the detection tool's output; it does not establish a choice of licenses or a definitive SPDX expression.\n\nScan options: `{}`\n\n## Tool versions\n\n```text\n{}\n```\n\n## Summary\n\n| Detected value | File count |\n| --- | ---: |\n",
         options.target,
         if options.docker {
             "Docker / Debian trixie"
@@ -380,7 +376,7 @@ fn report(
             paths.len()
         ));
     }
-    out.push_str("\n## ファイル一覧\n");
+    out.push_str("\n## Files\n");
     for (license, paths) in groups {
         out.push_str(&format!("\n### {license}\n\n"));
         for path in paths {
@@ -402,7 +398,8 @@ mod tests {
         )
     }
 
-    /// ビルドマニフェストは全 OS で同じ形式。Windows の絶対パスや親参照も拒否する。
+    /// Build manifests use the same format on every OS. Also reject Windows absolute
+    /// paths and parent references.
     #[test]
     fn rejects_paths_outside_scan_roots() {
         for path in ["../foo.c", "/foo.c", "C:/foo.c", "a\\b.c", "a\nb.c"] {
@@ -416,7 +413,7 @@ mod tests {
         );
     }
 
-    /// `--target` はパスに連結される。構成の外を指す値を通さないこと。
+    /// `--target` is joined onto a path. Reject values pointing outside the configuration.
     #[test]
     fn rejects_unsafe_targets() {
         for target in ["", ".", "..", "../x", "a/b", "a\\b", ".hidden", "a b"] {
@@ -426,7 +423,7 @@ mod tests {
         assert!(validate_target("aarch64-apple-darwin").is_ok());
     }
 
-    /// 終了コードが成功でも、検査漏れや余分な対象を黙って受け入れない。
+    /// Do not silently accept missing or extra inputs even when the command exits successfully.
     #[test]
     fn rejects_incomplete_duplicate_or_unexpected_results() {
         let inputs = inputs(&manifest("a.c"), GENERATED).unwrap();

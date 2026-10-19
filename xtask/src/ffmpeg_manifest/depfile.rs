@@ -1,7 +1,7 @@
-//! コンパイラが書き出す依存関係ファイル（`.d`）の読み取り。
+//! Read dependency files (`.d`) written by the compiler.
 //!
-//! FFmpeg のビルドは `-MMD -MF foo.d` を付けてコンパイルするので、翻訳単位ごとに
-//! 「この `.o` はどのファイルを include したか」が Makefile の規則の形で残る。
+//! FFmpeg compiles with `-MMD -MF foo.d`, so each translation unit leaves a Makefile
+//! rule recording which files were included by its `.o`:
 //!
 //! ```text
 //! libavformat/wavdec.o: \
@@ -9,20 +9,19 @@
 //!   config.h
 //! ```
 //!
-//! `-MMD` はシステムヘッダを除外するので、載るのは基本的にプロジェクト内の
-//! ファイルだけになる。
+//! `-MMD` excludes system headers, so the files listed are generally project files.
 
 use crate::Result;
 
-/// 依存関係ファイルの内容から、依存しているファイルのパスを取り出す。
+/// Extract dependency file paths from the contents of a dependency file.
 ///
-/// 返すのは `:` の右側に書かれたパスで、書かれていた順のまま。重複の除去や
-/// パスの解釈は行わない。
+/// Return paths on the right of `:` in their original order, without deduplicating
+/// or interpreting them.
 ///
-/// 規則の形になっていない行があった場合はエラーにする。黙って読み飛ばすと、
-/// ビルドマニフェストから依存が欠けても気づけないため。
+/// Reject lines that are not rules. Silently skipping them could leave dependencies
+/// missing from the build manifest without detection.
 pub fn parse_dependencies(content: &str) -> Result<Vec<String>> {
-    // 行末の `\` は行の継続。先に繋げてから、論理行ごとに規則として読む。
+    // A trailing `\` continues a line. Join continuations before parsing each logical line as a rule.
     let joined = content.replace("\\\r\n", " ").replace("\\\n", " ");
 
     let mut dependencies = Vec::new();
@@ -33,7 +32,7 @@ pub fn parse_dependencies(content: &str) -> Result<Vec<String>> {
         }
 
         let Some(separator) = find_rule_separator(line) else {
-            return Err(format!("依存関係の規則として読めない行です: {line}").into());
+            return Err(format!("cannot parse line as a dependency rule: {line}").into());
         };
 
         dependencies.extend(split_paths(&line[separator + 1..]));
@@ -42,10 +41,10 @@ pub fn parse_dependencies(content: &str) -> Result<Vec<String>> {
     Ok(dependencies)
 }
 
-/// 規則のターゲットと依存を区切る `:` の位置を探す。
+/// Find the `:` separating a rule's target from its dependencies.
 ///
-/// 区切りの `:` は直後が空白か行末になる。`C:\foo` のようなドライブ文字の `:` を
-/// 区切りと取り違えないよう、この条件で見分ける。
+/// The separator is followed by whitespace or the end of the line. This condition
+/// distinguishes it from a drive-letter colon, such as the one in `C:\foo`.
 fn find_rule_separator(line: &str) -> Option<usize> {
     line.char_indices().find_map(|(index, character)| {
         let next = line[index + character.len_utf8()..].chars().next();
@@ -54,10 +53,10 @@ fn find_rule_separator(line: &str) -> Option<usize> {
     })
 }
 
-/// 空白区切りのパスの並びを、Makefile のエスケープを解きながら分割する。
+/// Split whitespace-separated paths while unescaping Makefile escapes.
 ///
-/// コンパイラは、パス中の空白を `\ `、`#` を `\#`、`$` を `$$` と書き出す。
-/// それ以外の `\` はそのままの文字として扱う（Windows のパス区切りのため）。
+/// Compilers write spaces in paths as `\ `, `#` as `\#`, and `$` as `$$`.
+/// Other backslashes remain literal to preserve Windows path separators.
 fn split_paths(text: &str) -> Vec<String> {
     let mut paths = Vec::new();
     let mut current = String::new();
@@ -95,8 +94,8 @@ fn split_paths(text: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
-    /// 実際に clang が書き出した形（ターゲットの直後で改行し、依存を複数行に
-    /// 分けて継続する）を読めること。
+    /// Parse actual clang output, with a newline after the target and dependencies
+    /// continued over multiple lines.
     #[test]
     fn parses_continued_rule() {
         let content = "libavformat/wavdec.o: \\\n  src/libavformat/wavdec.c config_components.h \\\n  config.h\n";
@@ -111,9 +110,9 @@ mod tests {
         );
     }
 
-    /// パスに空白が含まれる場合、コンパイラは `\ ` と書き出す。ここで分割して
-    /// しまうと 1 つのパスが 2 つの存在しないパスになる。Xcode の SDK のパスなど、
-    /// FFmpeg の外のパスが依存に混ざることがあるので必要。
+    /// Compilers escape spaces in paths as `\ `. Splitting there would turn one path
+    /// into two nonexistent paths. This matters because dependencies can include
+    /// paths outside FFmpeg, such as Xcode SDK paths.
     #[test]
     fn keeps_escaped_spaces_in_path() {
         let content = "a.o: /Applications/My\\ Xcode.app/SDKSettings.json src/a.c\n";
@@ -134,8 +133,8 @@ mod tests {
         );
     }
 
-    /// Windows のパスにあるドライブ文字の `:` を、ターゲットと依存の区切りと
-    /// 取り違えないこと。取り違えると、ターゲットの残りが依存として紛れ込む。
+    /// Do not mistake a Windows drive-letter colon for the target/dependency separator.
+    /// Otherwise, the rest of the target would appear among the dependencies.
     #[test]
     fn does_not_split_at_drive_letter_colon() {
         let content = "C:\\build\\a.o: C:\\src\\a.c\n";
@@ -143,8 +142,8 @@ mod tests {
         assert_eq!(parse_dependencies(content).unwrap(), ["C:\\src\\a.c"]);
     }
 
-    /// 依存が 1 つも無い規則（`foo.h:` だけの行）は、`-MP` を付けたときに
-    /// ヘッダごとに書き出される。依存としては何も足さずに読み飛ばす。
+    /// With `-MP`, each header gets a rule without dependencies (just `foo.h:`).
+    /// Skip these without adding any dependencies.
     #[test]
     fn accepts_rule_without_dependencies() {
         let content = "a.o: src/a.c src/a.h\nsrc/a.h:\n";

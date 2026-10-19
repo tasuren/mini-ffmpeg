@@ -1,8 +1,6 @@
-//! `make -n install-headers` が表示するコマンドから、FFmpeg が公開の API として
-//! インストールするヘッダを読み取る。
+//! Read headers installed as FFmpeg's public API from `make -n install-headers` output.
 //!
-//! FFmpeg の `ffbuild/library.mak` は、ライブラリごとに、次の形でヘッダを
-//! インストールする。
+//! FFmpeg's `ffbuild/library.mak` installs headers for each library as follows:
 //!
 //! ```make
 //! install-lib$(NAME)-headers: $(addprefix $(SUBDIR),$(HEADERS) $(BUILT_HEADERS))
@@ -10,13 +8,13 @@
 //!     $$(INSTALL) -m 644 $$^ "$(INCINSTDIR)"
 //! ```
 //!
-//! `INCINSTDIR` は `<インストール先>/include/lib<名前>` で、利用者は
-//! `#include <libavutil/avutil.h>` のように、ライブラリのディレクトリの名前を
-//! 付けて読む。ここでは、コマンドが `... -m 644 <ヘッダ>... <ディレクトリ>` の形で
-//! 終わることを前提に、ヘッダと、その `#include` での名前を取り出す。
+//! `INCINSTDIR` is `<prefix>/include/lib<name>`. Consumers include headers using the
+//! library directory name, as in `#include <libavutil/avutil.h>`. Assume commands end
+//! with `... -m 644 <headers>... <directory>` to extract the headers and their
+//! `#include` names.
 //!
-//! 実際にインストールはしない。`-n` はコマンドを表示するだけなので、何が
-//! 公開ヘッダかを、インストール先に何も書き込まずに知ることができる。
+//! Nothing is actually installed: `-n` only prints commands, allowing public headers
+//! to be identified without writing to the installation destination.
 
 use std::collections::BTreeSet;
 
@@ -26,21 +24,21 @@ use super::{
 };
 use crate::Result;
 
-/// インストールされるヘッダ 1 つ。
+/// One header to be installed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledHeader {
-    /// インストール元のファイル。コマンドに書かれていた通りのパス。
+    /// The source file, with its path as written in the command.
     pub source: String,
 
-    /// インストール先のディレクトリの名前。ライブラリの名前（`libavutil` など）。
+    /// The destination directory name: the library name (such as `libavutil`).
     pub library: String,
 }
 
 impl InstalledHeader {
-    /// 利用者が `#include` に書く名前。`libavutil/avutil.h` の形。
+    /// The name consumers use in `#include`, such as `libavutil/avutil.h`.
     ///
-    /// `install` はファイルをディレクトリの直下にコピーするので、インストール元が
-    /// どこにあっても、ライブラリの名前とファイルの名前だけで決まる。
+    /// `install` copies files directly into the destination directory, so only the
+    /// library name and file name matter, regardless of the source location.
     fn include_name(&self) -> String {
         let file_name = self.source.rsplit('/').next().unwrap_or(&self.source);
 
@@ -48,25 +46,25 @@ impl InstalledHeader {
     }
 }
 
-/// コマンド 1 行を読み、ヘッダをインストールするコマンドであれば、その内容を返す。
+/// Parse one command line and return its contents if it installs headers.
 ///
-/// それ以外のコマンド（`mkdir` や、pkg-config のファイルのインストールなど）には、
-/// 空の `Vec` を返す。
+/// Return an empty `Vec` for other commands, such as `mkdir` or installation of
+/// pkg-config files.
 ///
 /// # Errors
 ///
-/// ヘッダとそれ以外のファイルを、同じコマンドでインストールする構成だった場合。
-/// 公開ヘッダだけを取り出せるという前提が外れている。
+/// Reject configurations that install headers and other files in the same command:
+/// they violate the assumption that public headers can be extracted independently.
 pub fn parse_line(line: &str) -> Result<Vec<InstalledHeader>> {
-    // 引用符が閉じていない行は、コマンドとして解釈できないので対象外にする。
+    // Ignore lines with unterminated quotes, which cannot be parsed as commands.
     let Some(words) = split_shell_words(line) else {
         return Ok(Vec::new());
     };
 
-    // `install` のプログラムの名前は環境によって違いうる（`configure` が決める）
-    // ので、名前ではなく、FFmpeg の Makefile が必ず付ける `-m 644` で見分ける。
-    // この行は、進捗の表示（`printf "INSTALL\t%s\n" ...;`）に続けて書かれるので、
-    // 行の途中から探す。
+    // The install program's name can vary by environment (`configure` chooses it).
+    // Identify it by `-m 644`, which FFmpeg's Makefile always adds, rather than by name.
+    // Search within the line because it follows a progress message
+    // (`printf "INSTALL\t%s\n" ...;`) on the same line.
     let Some(mode) = words
         .windows(2)
         .position(|pair| pair[0] == "-m" && pair[1] == "644")
@@ -74,7 +72,7 @@ pub fn parse_line(line: &str) -> Result<Vec<InstalledHeader>> {
         return Ok(Vec::new());
     };
 
-    // `-m 644` の後ろは、インストールするファイルが並び、最後がインストール先。
+    // The words after `-m 644` are source files followed by the destination.
     let [sources @ .., destination] = &words[mode + 2..] else {
         return Ok(Vec::new());
     };
@@ -87,9 +85,9 @@ pub fn parse_line(line: &str) -> Result<Vec<InstalledHeader>> {
 
     if let Some(other) = sources.iter().find(|source| !is_header(source)) {
         return Err(format!(
-            "公開ヘッダのみがインストールされることを想定していましたが、\
-            現在の FFmpeg はヘッダとヘッダではないファイルが、\
-            同じコマンドでインストールされるよう設定されています: {other}"
+            "expected only public headers to be installed, but \
+            the current FFmpeg configuration installs headers and non-header files \
+            in the same command: {other}"
         )
         .into());
     }
@@ -99,7 +97,7 @@ pub fn parse_line(line: &str) -> Result<Vec<InstalledHeader>> {
         .rsplit('/')
         .next()
         .filter(|name| !name.is_empty())
-        .ok_or_else(|| format!("ヘッダのインストール先を読めません: {destination}"))?;
+        .ok_or_else(|| format!("cannot parse header installation destination: {destination}"))?;
 
     Ok(sources
         .iter()
@@ -110,36 +108,37 @@ pub fn parse_line(line: &str) -> Result<Vec<InstalledHeader>> {
         .collect())
 }
 
-/// インストールされるヘッダのうち、翻訳単位が実際に include したものを選ぶ。
-/// 返すのは `#include` に書く名前（`libavutil/avutil.h` の形）で、名前の順。
+/// Select installed headers that translation units actually included.
+/// Return their `#include` names (such as `libavutil/avutil.h`) in alphabetical order.
 ///
-/// `headers` と `generated` は、ビルドマニフェストの同じ名前の項目。
+/// `headers` and `generated` correspond to the build manifest fields of those names.
 ///
-/// # インストールされるヘッダをそのまま使わない理由
+/// # Why not use all installed headers?
 ///
-/// インストールされるヘッダの集合は、`configure` の構成に関係なく、ほぼ一定に
-/// なっている。そのため、今の構成では使えないヘッダが混ざる。
+/// The set of installed headers is mostly independent of the `configure`
+/// configuration, so it includes headers unusable in the current configuration:
 ///
-/// - この環境に無いヘッダを要求するもの。`libavcodec/d3d11va.h` は Windows の
-///   `<d3d11.h>` を、`libavcodec/vdpau.h` は `<vdpau/vdpau.h>` を include する。
-///   読もうとした時点でエラーになる。
-/// - 実体がコンパイルされていないもの。`libavcodec/smpte_436m.h` は単独で
-///   読めるが、`smpte_436m.c` は今の構成ではコンパイルされない。宣言だけが
-///   見えて、呼ぶとリンクで失敗する。
+/// - Headers requiring unavailable dependencies. `libavcodec/d3d11va.h` includes
+///   Windows's `<d3d11.h>`, and `libavcodec/vdpau.h` includes `<vdpau/vdpau.h>`.
+///   Including them fails immediately.
+/// - Headers whose implementations are not compiled. `libavcodec/smpte_436m.h` can
+///   be included on its own, but `smpte_436m.c` is not compiled in this configuration.
+///   Its declarations are visible, but calling them fails at link time.
 ///
-/// 翻訳単位が include したヘッダに絞ると、どちらも外れる。include されたヘッダは、
-/// 元のビルドで実際に読めたものである。また、実体の `.c` がコンパイルされて
-/// いれば、その `.c` が自分のヘッダを include している。
+/// Restricting the set to headers included by translation units excludes both cases.
+/// Included headers were readable in the original build. Also, a compiled
+/// implementation `.c` includes its own header.
 ///
-/// ここで外れないのは、使われているヘッダの中に、この環境では実体の無い宣言が
-/// 混ざる場合。`libavcodec/jni.h` は Android 専用の関数を無条件に宣言している。
-/// これは宣言の単位の話なので、ヘッダの単位では扱えない。
+/// This does not exclude declarations in otherwise used headers whose implementations
+/// are unavailable in this environment. `libavcodec/jni.h` unconditionally declares
+/// Android-only functions. That requires handling individual declarations rather
+/// than entire headers.
 ///
 /// # Errors
 ///
-/// - ヘッダが、`#include` での名前と違う場所にある場合。名前とツリーのパスが
-///   一致するという前提で、ビルドマニフェストには名前だけを書き出している。
-/// - 選んだ結果が空の場合。コマンドの形についての前提が外れている。
+/// - A header is located at a different path from its `#include` name. The build
+///   manifest stores only names, assuming they match paths in the source tree.
+/// - The selection is empty, indicating that the command format assumptions failed.
 pub fn select_public_headers(
     installed: &[InstalledHeader],
     tree: &SourceTree,
@@ -151,8 +150,8 @@ pub fn select_public_headers(
     for header in installed {
         let include_name = header.include_name();
 
-        // ツリーのヘッダは `SRC_PATH` の絶対パスで、生成物はビルドディレクトリ
-        // からの相対パスで書かれる。
+        // Source tree headers use absolute `SRC_PATH` paths; generated files use paths
+        // relative to the build directory.
         let (path, used) = match tree.classify(&header.source) {
             Location::Tree(path) => {
                 let used = headers.contains(&path);
@@ -164,21 +163,21 @@ pub fn select_public_headers(
             }
             Location::External => {
                 return Err(format!(
-                    "FFmpeg のツリーの外にある不明なヘッダが\
-                    インストールされる構成になってて、これは想定外です: {}",
+                    "the configuration installs an unknown header outside the FFmpeg source tree\
+                    ; this is unexpected: {}",
                     header.source,
                 )
                 .into());
             }
         };
 
-        // インクルードディレクトリは、ツリーのルートと、生成物のディレクトリの
-        // ルート。そこからの相対パスが名前と違うと、`#include` で見つからない。
-        // サブディレクトリのヘッダがインストールされる構成になると、ここに当たる。
+        // The include directories are the source tree root and generated files root.
+        // If a relative path differs from the include name, `#include` cannot find it.
+        // Configurations that install headers from subdirectories trigger this case.
         if path != include_name {
             return Err(format!(
-                "公開ヘッダ {include_name} が、名前と違う場所（{path}）にあります。\n\
-                 `#include` での名前と、実際のパスを分けて持つ対応が必要です。"
+                "public header {include_name} is located at a different path ({path}).\n\
+                 Support for storing the `#include` name separately from the actual path is required."
             )
             .into());
         }
@@ -190,8 +189,8 @@ pub fn select_public_headers(
 
     if public.is_empty() {
         return Err(
-            "make -n install-headers の出力から、翻訳単位が include した公開ヘッダを \
-             1 つも読み取れませんでした"
+            "could not find any public headers included by translation units \
+             in make -n install-headers output"
                 .into(),
         );
     }
@@ -218,9 +217,9 @@ mod tests {
         values.iter().map(|value| (*value).to_owned()).collect()
     }
 
-    /// 実際の `make -n install-headers` の 1 行の形。進捗の表示に続けて、同じ行に
-    /// `install` のコマンドが書かれる。ツリーのヘッダは絶対パス、生成物は
-    /// ビルドディレクトリからの相対パスで並ぶ。
+    /// An actual `make -n install-headers` line has an `install` command after the
+    /// progress message on the same line. Source tree headers use absolute paths;
+    /// generated files use paths relative to the build directory.
     #[test]
     fn parses_header_install_command() {
         let line = "printf \"INSTALL\\t%s\\n\" work/FFmpeg/libavutil/avutil.h \
@@ -236,8 +235,8 @@ mod tests {
         );
     }
 
-    /// `install-headers` は、pkg-config のファイルもインストールする。ディレクトリを
-    /// 作るコマンドも表示される。どちらもヘッダではないので、読み飛ばす。
+    /// `install-headers` also installs pkg-config files and prints commands that create
+    /// directories. Skip both because neither describes headers.
     #[test]
     fn ignores_other_commands() {
         for line in [
@@ -251,8 +250,8 @@ mod tests {
         }
     }
 
-    /// ヘッダとそれ以外が同じコマンドに混ざっていたら、公開ヘッダだけを取り出せて
-    /// いない。黙って片方を捨てずに止まること。
+    /// Mixing headers and other files in one command violates the public-header-only
+    /// assumption. Stop rather than silently discarding one group.
     #[test]
     fn rejects_headers_mixed_with_other_files() {
         let line =
@@ -261,11 +260,12 @@ mod tests {
         assert!(parse_line(line).is_err());
     }
 
-    /// 翻訳単位が include したヘッダだけが残ること。ツリーのヘッダは `headers` と、
-    /// 生成物は `generated` と突き合わせる。
+    /// Keep only headers included by translation units. Match source tree headers
+    /// against `headers` and generated files against `generated`.
     ///
-    /// `d3d11va.h` は、インストールされるが、今の構成ではどの翻訳単位も include
-    /// しないヘッダの例。Windows のヘッダを要求するので、残すと変換できない。
+    /// `d3d11va.h` is installed but no translation unit includes it in the current
+    /// configuration. Keeping it would prevent translation because it requires Windows
+    /// headers.
     #[test]
     fn selects_only_headers_that_units_include() {
         let installed = [
@@ -298,9 +298,9 @@ mod tests {
         );
     }
 
-    /// サブディレクトリのヘッダがインストールされると、`install` がディレクトリの
-    /// 直下にコピーするので、`#include` での名前とツリーのパスが食い違う。
-    /// ビルドマニフェストには名前しか書き出さないので、食い違ったら止まること。
+    /// When installing a header from a subdirectory, `install` copies it directly into
+    /// the destination, making its `#include` name differ from its source tree path.
+    /// Stop on mismatches because the build manifest only stores the name.
     #[test]
     fn rejects_header_whose_path_differs_from_include_name() {
         let installed = [header("/work/FFmpeg/libavcodec/aac/aac.h", "libavcodec")];
@@ -316,8 +316,8 @@ mod tests {
         assert!(select_public_headers(&installed, &tree(), &[], &[]).is_err());
     }
 
-    /// 1 つも選べないのは、コマンドの読み取りの前提が外れたとき。空の一覧を
-    /// 黙って書き出さないこと。
+    /// An empty selection indicates that command parsing assumptions failed.
+    /// Do not silently write an empty list.
     #[test]
     fn rejects_empty_selection() {
         let installed = [header("/work/FFmpeg/libavcodec/d3d11va.h", "libavcodec")];
