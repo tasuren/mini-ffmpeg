@@ -126,6 +126,7 @@ fn main() -> ExitCode {
     // 最初に出力する。
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=build/translate.rs");
+    println!("cargo:rerun-if-changed=build/platform_workarounds.rs");
 
     // ビルドマニフェストはターゲットごとに別のファイルなので、今のターゲットのものを
     // 指定する。無い場合も、置かれたときに再実行させるために指定する。

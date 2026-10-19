@@ -31,3 +31,8 @@ proc-macro2 = "1"
 
 # ビルドマニフェスト（`FFmpeg_build/<ターゲット>/cinrs_manifest.toml`）の読み取り用。読み取りに要る機能だけを有効にしている。
 toml = { version = "1", default-features = false, features = ["parse", "serde", "std"] }
+
+[dev-dependencies]
+# Exercise the build-time validation and filtering against cinrs tokens.
+cinrs-core = "=0.3.0"
+proc-macro2 = "1"

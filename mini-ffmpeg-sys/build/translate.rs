@@ -11,6 +11,10 @@
 //! 変換する翻訳単位は 2 種類ある（[`UnitKind`]）。FFmpeg の `.c` と、公開ヘッダを
 //! include するだけの翻訳単位で、変換の指定が一部違う。
 
+#[path = "platform_workarounds.rs"]
+mod platform_workarounds;
+
+use self::platform_workarounds::Workarounds;
 use std::path::{Path, PathBuf};
 
 use cinrs_core::{
@@ -100,9 +104,21 @@ impl Settings {
     /// ファイルを読めない場合、C のコードにエラーがある場合、変換後のコードが
     /// cinrs のランタイムを必要とする場合。
     pub fn translate(&self, source: &Path) -> Result<Translated, String> {
-        let options = self.options(UnitKind::Implementation)?;
+        let mut options = self.options(UnitKind::Implementation)?;
+        let workarounds = Workarounds::for_target(&self.target);
+        workarounds.apply(&mut options);
 
-        finish(cinrs_core::translate_file(source, &options)?)
+        // Check that unsupported platform types occur only in known declarations
+        // covered by the workarounds.
+        if workarounds.needs_validation() {
+            workarounds.validate(&cinrs_core::preprocess_file(source, &options)?)?;
+        }
+
+        finish(
+            cinrs_core::translate_file(source, &options)?,
+            workarounds,
+            false,
+        )
     }
 
     /// 公開ヘッダを include するだけの翻訳単位を変換する。
@@ -115,13 +131,25 @@ impl Settings {
     ///
     /// [`Settings::translate`] と同じ。
     pub fn translate_public_api(&self, name: &str, source: &str) -> Result<Translated, String> {
-        let options = self.options(UnitKind::PublicApi)?;
+        let mut options = self.options(UnitKind::PublicApi)?;
+        let workarounds = Workarounds::for_target(&self.target);
+        workarounds.apply(&mut options);
 
-        finish(cinrs_core::translate_source(
-            name.to_owned(),
-            source.to_owned(),
-            &options,
-        ))
+        // Check that unsupported platform types occur only in known declarations
+        // covered by the workarounds.
+        if workarounds.needs_validation() {
+            workarounds.validate(&cinrs_core::preprocess_source(
+                name.to_owned(),
+                source.to_owned(),
+                &options,
+            ))?;
+        }
+
+        finish(
+            cinrs_core::translate_source(name.to_owned(), source.to_owned(), &options),
+            workarounds,
+            true,
+        )
     }
 
     /// cinrs に渡す指定を組み立てる。
@@ -211,12 +239,6 @@ impl Settings {
                 .push(CommandLineMacro::Define(define.clone()));
         }
 
-        for define in platform_workarounds(&self.target) {
-            options
-                .macros
-                .push(CommandLineMacro::Define((*define).to_owned()));
-        }
-
         Ok(options)
     }
 }
@@ -227,7 +249,11 @@ impl Settings {
 ///
 /// C のコードにエラーがある場合と、変換後のコードが cinrs のランタイムを必要と
 /// する場合。
-fn finish(translation: FileTranslation) -> Result<Translated, String> {
+fn finish(
+    translation: FileTranslation,
+    workarounds: Workarounds,
+    public_api: bool,
+) -> Result<Translated, String> {
     let diagnostics = &translation.diagnostics;
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
@@ -271,6 +297,13 @@ fn finish(translation: FileTranslation) -> Result<Translated, String> {
         .filter(|header| !matches!(header.kind, HeaderKind::Bundled))
         .map(|header| header.name.clone())
         .collect();
+
+    let items = if public_api {
+        workarounds.exclude_declarations(items)?
+    } else {
+        items
+    };
+    workarounds.check_references(items.clone())?;
 
     let mut declarations = Vec::new();
     collect_declarations(items.clone(), &mut declarations);
@@ -397,33 +430,6 @@ fn parse_c_standard(name: &str) -> Result<(Standard, Dialect), String> {
     };
 
     Ok((standard, dialect))
-}
-
-/// プラットフォームのヘッダを cinrs で読むための回避策。翻訳単位の先頭で定義する
-/// マクロを、`NAME=VALUE` の形で返す。
-///
-/// プラットフォームのヘッダは、そのプラットフォームの C コンパイラ（macOS なら
-/// Apple clang）に読まれる前提で書かれている。cinrs は GCC として振る舞うので、
-/// ヘッダの期待と食い違う箇所が出ることがある。
-///
-/// どの項目も cinrs の側で直れば消せる。消すときは、その項目を外して
-/// `cargo test -p mini-ffmpeg-sys` が通ることを確かめる。
-fn platform_workarounds(target: &str) -> &'static [&'static str] {
-    if target.ends_with("-apple-darwin") {
-        &[
-            // SDK の `<math.h>` は、半精度の関数（`__fabsf16` など）を `_Float16` で
-            // 無条件に宣言している。cinrs は `_Float16` を扱えず、宣言を読んだ
-            // だけでエラーにする。
-            //
-            // FFmpeg はこれらの関数を呼ばないので、宣言を読み飛ばせれば十分。型を
-            // `float` に置き換えて、宣言を通している。置き換えた宣言の型は実際の
-            // 関数と食い違うが、呼ばれない宣言は出力されないので、Rust から誤って
-            // 呼ぶこともできない。
-            "_Float16=float",
-        ]
-    } else {
-        &[]
-    }
 }
 
 /// 1 行がこの長さを超えたら、次の `,` で改行する。配列の初期化子のように、
