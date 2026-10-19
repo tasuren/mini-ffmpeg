@@ -1,19 +1,19 @@
-# scripts
+# Scripts
 
-メンテナが手元で使うスクリプト。利用者のビルドでは使われません。
+Maintainer helpers for generating target-specific FFmpeg configurations. Normal
+crate builds do not invoke these scripts.
 
-どちらも `cargo xtask ffmpeg-manifest` を、普段とは別のターゲット向けに動かすためのものです。
-`configure` はターゲットのコードを実際に実行して調べるので、ビルド構成
-（`mini-ffmpeg-sys/FFmpeg_build/<ターゲットトリプル>/`）は、ターゲットを実行できる環境で
-生成します。ホストと同じターゲットなら、スクリプトを使わず `cargo xtask ffmpeg-manifest`
-を直接実行します。
-
-| スクリプト | 生成するターゲット | 必要なもの |
+| Script | Configuration | Requirements |
 | --- | --- | --- |
-| `ffmpeg-manifest-x86_64-apple-darwin.sh` | `x86_64-apple-darwin` | Apple Silicon の Mac、Rosetta、`x86_64-apple-darwin` の Rust ツールチェーン |
-| `ffmpeg-manifest-linux-docker.sh amd64\|arm64` | `x86_64-unknown-linux-gnu`、`aarch64-unknown-linux-gnu` | Docker |
+| `ffmpeg-manifest-x86_64-apple-darwin.sh` | `x86_64-apple-darwin` | Apple Silicon Mac, Rosetta, matching x86_64 Rust toolchain. |
+| `ffmpeg-manifest-linux-docker.sh arm64` | `aarch64-unknown-linux-gnu` | Docker able to run Linux arm64. |
+| `ffmpeg-manifest-linux-docker.sh amd64` | `x86_64-unknown-linux-gnu` | Docker able to run Linux amd64. |
 
-どちらも、エミュレーションで生成します。本物のマシンで生成した場合と完全に同じ内容かは
-確かめていません。ホストと違うアーキテクチャでは処理が遅い可能性があります。
+See [Generating build configurations](../docs/build-configurations.md) for the
+workflow, environment overrides and architecture checks. Docker uses emulation
+when the container architecture differs from its host; otherwise it runs that
+architecture directly.
 
-Windows 用のスクリプトはありません。実機で確かめてから追加します。
+There is no Windows helper script. The documented
+[Windows/MSVC procedure](../docs/build-configurations.md#windowsmsvc) uses a
+Visual Studio tools prompt and an MSYS2 shell.

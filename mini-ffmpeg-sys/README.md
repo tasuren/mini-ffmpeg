@@ -1,173 +1,134 @@
 # mini-ffmpeg-sys
 
-FFmpeg のライブラリ API を小規模のビルド構成で提供するクレート。
-ビルド時に FFmpeg の C コードを cinrs で Rust に変換するので、C コンパイラ無しで
-ビルド可能。
+Low-level FFmpeg library APIs from a small configuration, translated from C to
+Rust with cinrs at build time. Normal Cargo builds do not compile C sources or
+link an installed FFmpeg library.
 
-ビルドには、FFmpeg のサブモジュールと、プラットフォームのヘッダ（macOS では
-Command Line Tools）が必要です。ビルドできるのは、`FFmpeg_build/` に構成がある
-ターゲットですが、構成があることは、ビルドできることを意味しません。
+This is experimental code. Successful builds and tests do not establish the
+correctness of every translated operation or ABI. The current configuration
+supports WAV input/output and file/pipe protocols, with threads, codecs and
+filters disabled.
 
-**現状、一部危険な操作が可能な状態があり、どのターゲットにおいても安全が完璧に
-確認されたわけはありません。実用は自己責任となります。**
+## Building
 
-| ターゲット | 状況 |
-| --- | --- |
-| `aarch64-apple-darwin` | ネイティブでビルドとテストが通るが、`_Float16`関連で不正な操作が可能で要注意 |
-| `x86_64-apple-darwin` | テストが通る（Apple Silicon の Mac で、クロスコンパイルして Rosetta で実行） |
-| `x86_64-unknown-linux-gnu` | テストが通る（arm64 の Ubuntu で、クロスコンパイルして QEMU で実行）。回避策は要らない |
-| `aarch64-unknown-linux-gnu` | 構成はあるが、ビルドは失敗する。`_Float16` や NEON/SVE の型を含むヘッダの回避策が要る |
-
-ビルド先がホストと違う場合（クロスコンパイル）と、Windows のように cinrs が
-ヘッダの場所を自分では探せないターゲットでは、環境変数
-`CINRS_SYSTEM_INCLUDE_PATH` に、ターゲット用のプラットフォームのヘッダのある
-ディレクトリを指定する必要があります。ホストのヘッダはターゲットとレイアウトが違い、
-読むと構造体のオフセットなどが食い違うためです。指定が無いと、ビルドスクリプトが
-止まります。指定の中身がターゲットのものかは検査できないので、利用者が保証します。
-
-特に関連するファイル:
-
-- `build.rs`、`build/`: FFmpeg の C コードを Rust に変換するビルドスクリプト
-- `FFmpeg`: 上流 FFmpeg のサブモジュール
-- `FFmpeg_build/<ターゲットトリプル>/`: ターゲットごとのビルド構成。ビルドスクリプトは、
-  ビルド先の `TARGET` と同じ名前のディレクトリを読みます。
-  - `cinrs_manifest.toml`: ツールにより生成されたビルドマニフェスト
-  - それ以外: `make`/`configure` が生成したファイル群
-- `LICENSE.ffmpeg`: 使用している FFmpeg の構成におけるライセンス全文
-
-## ビルドの流れ
-
-ビルドマニフェスト（`FFmpeg_build/<ターゲットトリプル>/cinrs_manifest.toml`）は、FFmpeg を一度ビルドして読み取った、
-ビルドの内容の宣言です。どのファイルを、どの指定でコンパイルするかを含みます。
-ツールが生成し、手では編集しません。
-
-ビルドスクリプトは、次の 2 種類の変換を行い、Cargo の出力用のディレクトリに
-書き出します。`src/lib.rs` がそれを読み込みます。
-
-- 公開の API: ビルドマニフェストの `public_headers`（FFmpeg が公開ヘッダとして
-  インストールするもの）をまとめて変換します。関数の宣言、構造体、列挙子を
-  クレートのルートに置くので、`mini_ffmpeg_sys::avformat_open_input` のように
-  使えます。
-- 実装: ビルドマニフェストにある FFmpeg の `.c` を一つずつ変換します。関数の
-  実体を持ち、公開の API の宣言は、リンクのときにこれに繋がります。利用者に
-  見せるものではないので、ドキュメントからは隠しています。
-
-ビルドスクリプトは、公開ヘッダが宣言する FFmpeg の関数が、すべて実装の側で
-定義されていることを確かめます。実装の側に定義がない例外が Android 専用の
-`av_jni_get_android_app_ctx` と `av_jni_set_android_app_ctx` で、宣言はありますが
-呼ぶとリンクに失敗します。
-
-変換は、入力（FFmpeg のソース、`FFmpeg_build/<ターゲットトリプル>/`、プラットフォームのヘッダ）が
-変わったときだけ行われます。Apple M3 Pro（11 コア）での目安は、変換に約 7 秒、
-変換後のコードのコンパイルに約 5 秒です。
-
-変換済みの Rust のコードは、リポジトリにもクレートの配布にも含めていません。
-変換後のコードには、その `.c` が読んだプラットフォームのヘッダの宣言や
-インライン関数も含まれるためです。FFmpeg のソースを無編集で配布し、ビルドする
-マシンで変換します。
-
-## ライセンス
-
-本クレートのコードは GNU Lesser General Public License version 2.1
-or later（SPDX: `LGPL-2.1-or-later`）で提供しています。
-ライセンスの全文はリポジトリルートの `LICENSE` を参照してください。
-
-## FFmpeg 由来のファイル
-
-FFmpeg の取り込み元は、`FFmpeg/` サブモジュールです。使用するリビジョンは、
-このリポジトリが記録しているサブモジュールのコミットを参照してください。
-
-[LICENSE.ffmpeg](LICENSE.ffmpeg) は、そのリビジョンの
-`COPYING.LGPLv2.1` を変更せずコピーした LGPL 2.1 の全文です。
-FFmpeg 全体には異なるライセンスのファイルも含まれるため、サブモジュール内の
-[LICENSE.md](FFmpeg/LICENSE.md) と各ファイルの表示も参照してください。
-
-### 生成物
-
-`FFmpeg_build/<ターゲットトリプル>/` 配下の `cinrs_manifest.toml` 以外の内容は、上記 FFmpeg の `configure` と `make` による
-生成物を、手を加えずにコピーしたものです。設定ヘッダー、バージョンヘッダー、
-有効な部品の登録配列を含みます。FFmpeg 由来の構成ファイルとして、
-本クレートの LGPL-2.1-or-later の配布に含めています。
-
-構成と生成環境は、同じディレクトリの `cinrs_manifest.toml` に記録しています。
-現在の構成では GPL、nonfree、version3 オプションを有効にしていません。
-`config.h` のコンパイラ識別文字列は、生成時の環境を示す情報です。
-
-リポジトリのルートで次のコマンドを実行すると、構成ファイルとビルドマニフェストを
-再生成できます。FFmpeg のサブモジュール、C コンパイラ、`make` が必要です。
-FFmpeg のバージョンや構成を変えるときだけ実行します。
-
-書き出し先は、実行したマシンの `rustc` のホストのトリプルで決まります。
-`configure` はそのマシンを調べるので、別のターゲットの構成は、そのターゲットの
-マシンで実行して作ります。他のトリプルのディレクトリには触れません。
+Initialize the FFmpeg submodule and install the target's platform headers, then
+run from the repository root:
 
 ```sh
-cargo xtask ffmpeg-manifest
+git submodule update --init # if you have never done it
+cargo test -p mini-ffmpeg-sys
 ```
 
-生成処理と `configure` の引数は
-[xtask/src/ffmpeg_manifest.rs](../xtask/src/ffmpeg_manifest.rs) にあります。
-`FFmpeg_build/<ターゲットトリプル>/` は再生成時に置き換えられるため、説明や
-手書きのファイルはその外に置いています。
+See [Building and cross-compiling](../docs/building.md) for prerequisites,
+verified targets, and macOS/Linux cross-compilation examples. macOS and
+Linux/glibc have successful build/test records for arm64 and x86_64. Windows/MSVC
+configurations are present, but cinrs does not support the required MSVC dialect.
+A recorded configuration alone does not mean that a target builds.
 
-### LGPL 以外のライセンスのファイル
+Cross-compilation and Windows/MSVC builds require `CINRS_SYSTEM_INCLUDE_PATH`
+to identify the target's headers explicitly. Windows/MSVC requires it even for
+native builds because cinrs does not discover those headers automatically.
+The build script rejects a missing setting; it cannot check that supplied
+headers actually belong to the intended target. This setting does not resolve
+the current MSVC dialect limitations.
 
-FFmpeg には、LGPL 以外のライセンスの表示を持つファイルがあります。現在の構成で
-使うファイルでは、次のものが該当します。条件の原文は各ファイルにあります。
-サブモジュール内の [LICENSE.md](FFmpeg/LICENSE.md) も参照してください。
+Normal users do not need to regenerate configurations. For FFmpeg updates and
+configuration changes, see [Generating build configurations](../docs/build-configurations.md).
 
-| ライセンス | ファイル |
+## Public API
+
+Functions, structs and enumerators from the recorded public headers are exposed
+at the crate root under their C names, such as
+`mini_ffmpeg_sys::avformat_open_input`. Calls use the unsafe C API and its
+ownership and lifetime rules; this crate does not provide a safe wrapper.
+
+Public declarations link to definitions translated from individual FFmpeg `.c`
+files. Use the crate-root types and declarations rather than implementation
+modules, which have separate Rust types and are hidden from documentation.
+The Android-only `av_jni_get_android_app_ctx` and `av_jni_set_android_app_ctx`
+remain declared but have no implementations in the current configurations;
+calling them fails to link.
+
+Platform headers can contribute declarations as well. Target-specific
+workarounds validate and remove known declarations whose types were substituted
+for parsing; those substitutions do not implement the original ABI. See
+[Architecture](../docs/architecture.md) for the translation paths, validation and
+rebuilding behavior.
+
+## Source layout
+
+| Path | Purpose |
 | --- | --- |
-| IJG（libjpeg 由来） | `libavcodec/jfdctfst.c`、`libavcodec/jfdctint_template.c`、`libavcodec/jrevdct.c` |
-| BSD-3-Clause（LGPL の表示と併記） | `libavutil/fixed_dsp.c`、`libavutil/fixed_dsp.h`、`libavutil/uuid.c` |
-| BSL-1.0（LGPL の表示と併記。一部の関数が対象） | `libavutil/mathematics.c`、`libavutil/libm.h` |
+| `build.rs`, `build/` | Translation and validation during Cargo builds. |
+| `FFmpeg/` | Unmodified upstream FFmpeg source submodule. |
+| `FFmpeg_build/<target-triple>/` | Generated manifest, configuration headers and other configure/make output for one target. |
+| `LICENSE.ffmpeg` | Copy of upstream `COPYING.LGPLv2.1`. |
+
+Translated Rust is generated in Cargo's `OUT_DIR`, not committed or distributed
+as pretranslated source. It can contain material read from local platform
+headers, so translation takes place on the machine building the crate.
+
+## Licenses and provenance
+
+Project code is licensed under GNU Lesser General Public License version 2.1
+or later (`LGPL-2.1-or-later`); see the root [LICENSE](../LICENSE).
+
+FFmpeg comes from the revision recorded by the `FFmpeg/` submodule.
+[LICENSE.ffmpeg](LICENSE.ffmpeg) is an unchanged copy of that revision's
+`COPYING.LGPLv2.1`. Also consult upstream [LICENSE.md](FFmpeg/LICENSE.md) and
+individual file notices, since the source tree includes other licenses.
+
+### Generated configuration files
+
+Files under `FFmpeg_build/<target-triple>/`, except `cinrs_manifest.toml`, are
+copied unchanged from FFmpeg's `configure`/`make` output. They include
+configuration and version headers and component registration tables. They are
+included as FFmpeg-derived configuration files in this crate's distribution.
+
+The manifest records the configuration and generating environment. The current
+configurations do not enable GPL, nonfree or version3 options. Compiler strings
+in `config.h` describe the generating environment. Regeneration replaces the
+whole target directory, so handwritten documentation belongs outside it.
+
+### Additional notices
+
+Files used by the current configuration carry the following additional notices.
+Read the original conditions in each file; this table is not a substitute for
+them. Paths are relative to `FFmpeg/`.
+
+| License | Files |
+| --- | --- |
+| IJG (libjpeg-derived) | `libavcodec/jfdctfst.c`, `libavcodec/jfdctint_template.c`, `libavcodec/jrevdct.c` |
+| BSD-3-Clause (alongside LGPL notices) | `libavutil/fixed_dsp.c`, `libavutil/fixed_dsp.h`, `libavutil/uuid.c` |
+| BSL-1.0 (alongside LGPL notices; applies to certain functions) | `libavutil/mathematics.c`, `libavutil/libm.h` |
 | ISC | `libavcodec/faandct.c` |
 | MIT | `libavutil/avsscanf.c` |
 | Zlib | `libavutil/adler32.c` |
 
-それ以外のファイルの表示は LGPL 2.1 or later のみです。`FFmpeg_build/` の
-生成物には、ライセンスの表示がありません。
-
-#### Independent JPEG Group のクレジット
-
-libjpeg 由来の 3 つのファイルについて、次のクレジットを記します。
+For the three libjpeg-derived files:
 
 > This software is based in part on the work of the Independent JPEG Group.
 
-- 3 つのファイルは、FFmpeg のツリーにあるものをそのまま使っています。本クレートで
-  加えた追加、削除、変更はありません。FFmpeg が libjpeg のファイルに加えた変更は、
-  FFmpeg のリポジトリの履歴を参照してください。
-- 著作権の表示、無保証の表示、配布の条件は、各ファイルの先頭にあります。
-- 本クレートを使ったプログラムを実行ファイルだけの形で配布する場合は、付属の
-  文書に上記のクレジットを入れる必要があります。
+These files are used unchanged from FFmpeg's tree. For FFmpeg's changes to the
+original libjpeg files, consult upstream history. Copyright, warranty and
+distribution conditions remain in their source notices. Include the above
+credit in accompanying documentation when distributing an executable that uses
+this code.
 
-#### 実行ファイルを配布する場合
+Rust builds normally link crate code statically, including the translated
+FFmpeg code. Redistribution must account for the applicable original license
+conditions; see also [FFmpeg's licensing information](https://ffmpeg.org/legal.html).
+The maintainer's [input license scan](../xtask/README.md#license-scanning) helps
+inspect recorded inputs but does not establish redistribution compliance.
 
-本クレートを使ったプログラムをビルドすると、FFmpeg のコードがその実行ファイルに
-含まれます。その実行ファイルを配布する場合、配布する人は各ライセンスの条件を
-満たす必要があります。次の一覧は、気づくための手掛かりとして挙げるもので、
-網羅的なものでも、法的な助言でもありません。**条件は原文で確認してください。**
+### Packaging
 
-- LGPL 2.1: 受け取った人がライブラリの部分を差し替えられるようにすることなどを
-  求めています。Rust のクレートは既定で静的にリンクされる点に注意してください。
-  FFmpeg による説明が <https://ffmpeg.org/legal.html> にあります。
-- BSD-3-Clause、MIT、ISC: 著作権の表示と許諾の文面を、原文のまま配布物に含める
-  ことを求めています。BSD-3-Clause は、実行ファイルの形での配布について、付属の
-  文書などに載せることを明記しています。
-- IJG: 上記のクレジットを、付属の文書に入れることを求めています。
-- BSL-1.0、Zlib: 表示を保つことを求めているのは、ソースの配布についてです。
-
-### クレートへの同梱
-
-`Cargo.toml` の `include` で、`LICENSE.ffmpeg`、この README、FFmpeg のソース、
-生成物、ビルドスクリプトを配布対象に指定しています。
-配布対象はリポジトリのルートから次のコマンドで確認できます。
+`Cargo.toml` selects FFmpeg source, generated configuration files, build scripts
+and license files for packaging. Inspect the selection from the repository root:
 
 ```sh
 cargo package -p mini-ffmpeg-sys --list --allow-dirty
 ```
 
-このクレートは、まだ公開できる状態ではありません（`publish = false`）。
-配布に含める FFmpeg のファイルの絞り込みと、docs.rs でのビルドの扱いが残っています。
-docs.rs はビルドスクリプトを Linux で実行するので、そのままでは C コードの変換に
-失敗します。
+The crate is not published (`publish = false`). Source selection for packaging
+and the docs.rs build setup still need work.
