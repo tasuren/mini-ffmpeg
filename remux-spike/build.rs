@@ -1,17 +1,18 @@
-//! cinrs のマクロに、C のコードを変換する対象のターゲットを伝える。
+//! Passes the C translation target to the cinrs macro.
 //!
-//! cinrs は、`sizeof` や構造体のレイアウト、`#if` の値を、マクロの展開時に
-//! ターゲットのデータモデルから決める。ところが proc-macro は rustc にターゲットを
-//! 問い合わせられないので、クレートの側から環境変数で渡す。
+//! During macro expansion, cinrs determines `sizeof`, struct layouts, and `#if`
+//! values from the target data model. A proc-macro cannot query rustc for the
+//! target, so the crate passes it through an environment variable.
 //!
-//! 渡さない場合、cinrs はホストのデータモデルで変換する。クロスコンパイルで
-//! ターゲットと食い違うと、展開されたコードの assert でコンパイルが失敗する。
+//! Without it, cinrs translates using the host data model. If this differs from
+//! the target when cross-compiling, assertions in the expanded code cause
+//! compilation to fail.
 //!
-//! もう 1 つの仕事は、`remux.c` を取り込むマクロの呼び出しを書き出すこと。
-//! FFmpeg の生成物（`config.h` など）はターゲットごとのディレクトリ
-//! （`mini-ffmpeg-sys/FFmpeg_build/<ターゲット>`）にあり、マクロの
-//! `#pragma cinrs include_path` は文字列のリテラルしか受け取れないので、
-//! ターゲットを知っているここでパスを組み立てる。
+//! This script also writes the macro invocation that translates `remux.c`.
+//! FFmpeg's generated files (such as `config.h`) live in a target-specific
+//! directory (`mini-ffmpeg-sys/FFmpeg_build/<target>`), and the macro's
+//! `#pragma cinrs include_path` only accepts string literals. The paths are
+//! therefore assembled here, where the target is known.
 
 // The macro keeps its output private, but must obey the same source validation
 // as mini-ffmpeg-sys before parsing any substituted platform declarations.
@@ -27,10 +28,10 @@ fn main() {
     // Track the directory so adding a platform module also reruns the build.
     println!("cargo:rerun-if-changed=../mini-ffmpeg-sys/build/platform_workarounds");
 
-    let target = env::var("TARGET").expect("Cargo がビルドスクリプトに TARGET を設定する");
+    let target = env::var("TARGET").expect("Cargo sets TARGET for build scripts");
     println!("cargo:rustc-env=CINRS_TARGET={target}");
 
-    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo が OUT_DIR を設定する"));
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR"));
 
     let mut options = Options::with_dialect(Standard::C17, Dialect::Iso)
         .for_target(TargetModel::from_triple(&target).expect("cinrs supports the build target"));
@@ -75,10 +76,11 @@ fn main() {
         .collect::<String>();
 
     fs::write(out_dir.join("remux_c.rs"), remux_c(&target, &defines))
-        .expect("OUT_DIR に書き出せる");
+        .expect("can write to OUT_DIR");
 }
 
-/// `remux.c` を取り込むマクロの呼び出し。指定の意味は `src/lib.rs` の説明にある。
+/// Builds the macro invocation that translates `remux.c`.
+/// See `src/lib.rs` for an explanation of the settings.
 ///
 /// Include paths are relative to this crate. Replacements come from the same
 /// policy used to validate the C source before invoking the macro.

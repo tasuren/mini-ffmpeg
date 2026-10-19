@@ -2,11 +2,12 @@
 resolver = "3"
 members = ["mini-ffmpeg", "mini-ffmpeg-sys", "remux-spike", "xtask"]
 
-# xtask は開発時にだけ使うコマンドなので、素の `cargo build` や `cargo run` の
-# 対象からは外す。実行は `cargo xtask <タスク名>`、テストは `cargo test -p xtask`。
+# xtask is a development-only command, so exclude it from plain `cargo build`
+# and `cargo run`. Run it with `cargo xtask <task>` and test it with
+# `cargo test -p xtask`.
 #
-# remux-spike は、取り込んだ FFmpeg が実際に動くかを確かめるための仮のクレート。
-# 同じく対象から外している。
+# remux-spike is a temporary crate for checking that the translated FFmpeg
+# actually works. It is also excluded.
 default-members = ["mini-ffmpeg", "mini-ffmpeg-sys"]
 
 [workspace.package]

@@ -1,56 +1,55 @@
 #!/bin/sh
-# Apple Silicon の Mac で、x86_64-apple-darwin の FFmpeg のビルド構成
-# （mini-ffmpeg-sys/FFmpeg_build/x86_64-apple-darwin）を生成する。
+# Generate the FFmpeg build configuration for x86_64-apple-darwin on an Apple
+# Silicon Mac (mini-ffmpeg-sys/FFmpeg_build/x86_64-apple-darwin).
 #
-# `configure` はターゲットのコードを実際に実行して調べるので、構成はターゲットを
-# 実行できるマシンで作る。Apple Silicon の Mac は、Rosetta で x86_64 のコードを
-# 実行できる。ここでは `cargo xtask ffmpeg-manifest` を、Rosetta の下で動かす。
+# `configure` probes the target by running its code, so generate the configuration
+# on a machine that can run the target. Apple Silicon Macs can run x86_64 code
+# through Rosetta. This script runs `cargo xtask ffmpeg-manifest` under Rosetta.
 #
-# macOS 標準の /bin/sh（bash 3.2 相当）で動くように書いてある。
+# Compatible with the default macOS /bin/sh (equivalent to bash 3.2).
 
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 
-# x86_64 の Rust のツールチェーン。別のものを使うときだけ環境変数で上書きする。
+# The x86_64 Rust toolchain. Override the environment variable to use another one.
 toolchain=${RUST_X86_64_TOOLCHAIN:-stable-x86_64-apple-darwin}
 
 if [ "$(uname -s)" != Darwin ] || [ "$(uname -m)" != arm64 ]; then
-    echo "error: Apple Silicon の Mac の、arm64 のシェルで実行してください。" >&2
+    echo "error: run this script in an arm64 shell on an Apple Silicon Mac." >&2
     exit 1
 fi
 
 if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
-    echo "error: Rosetta が使えません。softwareupdate --install-rosetta で入れてください。" >&2
+    echo "error: Rosetta is unavailable. Install it with softwareupdate --install-rosetta." >&2
     exit 1
 fi
 
 if ! cargo=$(rustup which --toolchain "$toolchain" cargo 2>/dev/null); then
-    echo "error: ツールチェーン $toolchain がありません。" >&2
+    echo "error: toolchain $toolchain is not installed." >&2
     echo "       rustup toolchain install $toolchain" >&2
     exit 1
 fi
 
-# configure が使う `gcc` を、x86_64 向けに固定するラッパーに差し替える。
+# Replace the `gcc` used by configure with a wrapper that forces x86_64 output.
 #
-# Rosetta の下で動かしても、Apple の clang は、既定で arm64 向けにコンパイルする。
-# そのままだと、config.h は arm64 のものになり、xtask の検査も止まる。`-arch` を
-# ラッパーの中で付けるので、`configure_args` は他のターゲットと同じままで、
-# マニフェストにも `-arch` は現れない。
+# Apple's clang defaults to arm64 even under Rosetta. Without the wrapper,
+# config.h would describe arm64, and xtask's validation would fail. Adding `-arch`
+# in the wrapper keeps `configure_args` the same as for other targets and leaves
+# `-arch` out of the manifest.
 shim=$(mktemp -d)
 trap 'rm -rf "$shim"' EXIT
 
 printf '#!/bin/sh\nexec /usr/bin/clang -arch x86_64 "$@"\n' > "$shim/gcc"
 chmod +x "$shim/gcc"
 
-# PATH は、ラッパー、x86_64 の Rust、システムのコマンドだけにする。Homebrew の
-# コマンド（/opt/homebrew/bin）は arm64 専用で、Rosetta の下では動かない。
+# Limit PATH to the wrapper, x86_64 Rust, and system commands. Homebrew commands
+# (/opt/homebrew/bin) are arm64-only and cannot run under Rosetta.
 #
-# `rustc -vV` を xtask が PATH から実行するので、x86_64 の `rustc` が先に見つかる
-# 必要がある。
+# xtask runs `rustc -vV` using PATH, so it must find the x86_64 `rustc` first.
 #
-# ビルドの成果物は専用のディレクトリに置く。arm64 の通常のビルドと同じ場所に置くと、
-# xtask のバイナリが互いに上書きされて、そのたびに作り直しになる。
+# Use a dedicated directory for build artifacts. Sharing the normal arm64 build
+# directory would overwrite the xtask binary and require rebuilding it each time.
 cd "$root"
 
 env \

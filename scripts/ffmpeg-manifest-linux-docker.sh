@@ -1,41 +1,41 @@
 #!/bin/sh
-# Docker で、Linux（glibc）の FFmpeg のビルド構成を生成する。
+# Generate the FFmpeg build configuration for Linux (glibc) using Docker.
 #
 #   scripts/ffmpeg-manifest-linux-docker.sh amd64   # x86_64-unknown-linux-gnu
 #   scripts/ffmpeg-manifest-linux-docker.sh arm64   # aarch64-unknown-linux-gnu
 #
-# `configure` はターゲットのコードを実際に実行して調べるので、構成はターゲットを
-# 実行できるマシンで作る。Docker は `--platform` で、ホストと違うアーキテクチャの
-# コンテナを（エミュレーションで）動かせる。ホストの OS は問わない。
-# ホストと同じアーキテクチャなら、エミュレーションは働かず、速い。
+# `configure` probes the target by running its code, so generate the configuration
+# on a machine that can run the target. Docker's `--platform` can run containers
+# for architectures other than the host's through emulation, regardless of the
+# host OS. Matching the host architecture avoids emulation and runs faster.
 #
-# 生成されるトリプルは、コンテナの中の `rustc` のホストで決まる。musl の Alpine
-# などを使うと、トリプルが変わる。
+# The host triple of `rustc` inside the container determines the generated triple.
+# Using a musl-based image such as Alpine changes the triple.
 #
-# macOS 標準の /bin/sh でも動くように書いてある。
+# Compatible with the default macOS /bin/sh.
 
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 
-# Rust の公式イメージ（Debian）。C コンパイラ、make、bash が入っている。
-# `config.h` は glibc のバージョンなどに依存するので、再現するときは同じイメージを
-# 使う。別のものを使うときだけ環境変数で上書きする。
+# Official Rust image (Debian), including a C compiler, make, and bash.
+# `config.h` depends on details such as the glibc version, so use the same image
+# to reproduce it. Override the environment variable to use another image.
 image=${FFMPEG_MANIFEST_IMAGE:-rust:1-trixie}
 
 case "${1:-}" in
     amd64 | arm64) platform=linux/$1 ;;
     *)
-        echo "使い方: $0 amd64|arm64" >&2
+        echo "Usage: $0 amd64|arm64" >&2
         exit 1
         ;;
 esac
 
-# - ホストのユーザーで実行する。root で動かすと、生成物の持ち主が root になる。
-#   そのため、ホームや Cargo の置き場所は、書き込める /tmp に変える。
-# - git の所有者の検査を無効にする。バージョン（ffversion.h）は `git describe` から
-#   決まるが、検査に掛かると、`n9.0.2` のようにならない。
-# - ビルドの成果物は、コンテナの中に置く。マウントしたディレクトリに置くと遅い。
+# - Run as the host user; running as root would make root own the generated files.
+#   Place the home and Cargo directories under writable /tmp for this reason.
+# - Disable git's ownership check. The version (ffversion.h) comes from
+#   `git describe`; if the check fails, it will not have a value such as `n9.0.2`.
+# - Keep build artifacts inside the container; a mounted directory would be slow.
 exec docker run --rm \
     --platform "$platform" \
     --user "$(id -u):$(id -g)" \

@@ -1,4 +1,5 @@
-//! `remux-spike <入力> <出力>` で、入力のストリームを再エンコードせずに出力へ書く。
+//! `remux-spike <input> <output>` writes input streams to the output without
+//! re-encoding.
 
 use std::{env, path::PathBuf, process::ExitCode};
 
@@ -7,7 +8,7 @@ fn main() -> ExitCode {
 
     let (Some(input), Some(output), None) = (arguments.next(), arguments.next(), arguments.next())
     else {
-        eprintln!("使い方: remux-spike <入力> <出力>");
+        eprintln!("Usage: remux-spike <input> <output>");
         return ExitCode::FAILURE;
     };
 

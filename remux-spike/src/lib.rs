@@ -1,16 +1,17 @@
-//! 変換した FFmpeg が実際に動くかを確かめるための、仮のクレート。
+//! A temporary crate for checking that the translated FFmpeg actually works.
 //!
-//! FFmpeg のツリーにあるサンプルの `doc/examples/remux.c` を、cinrs のマクロで
-//! そのまま取り込んでいる。このサンプルは、入力のコンテナからパケットを読み、
-//! 再エンコードせずに出力のコンテナへ書く。`ffmpeg -i in -c copy out` と同じ処理に
-//! 当たる。
+//! A cinrs macro translates `doc/examples/remux.c` from the FFmpeg source tree
+//! without modification. This example reads packets from the input container
+//! and writes them to the output container without re-encoding, equivalent to
+//! `ffmpeg -i in -c copy out`.
 //!
-//! FFmpeg 本体（`mini-ffmpeg-sys`）は、ビルドスクリプトが cinrs を直接呼んで
-//! 変換している。こちらは、cinrs のマクロで変換している。両者は C のシンボルの
-//! 名前で繋がるので、変換の方法が違っても一緒に動く。
+//! The FFmpeg implementation (`mini-ffmpeg-sys`) is translated by a build script
+//! that calls cinrs directly; this crate uses a cinrs macro instead. The two
+//! link through C symbol names, so they work together despite using different
+//! translation methods.
 //!
-//! マクロで取り込むために、このクレートのビルドには FFmpeg のツリーと、
-//! プラットフォームのヘッダが要る。
+//! Because the macro performs the translation, building this crate requires
+//! the FFmpeg source tree and platform headers.
 
 use std::{
     ffi::{CString, c_char, c_int},
@@ -18,49 +19,50 @@ use std::{
     ptr,
 };
 
-// `remux.c` は FFmpeg の関数を C のシンボルの名前で呼ぶので、Rust のコードからは
-// `mini-ffmpeg-sys` を一度も参照しない。Rust は参照の無い依存クレートをリンク
-// しないので、リンクだけを目的に宣言している。
+// `remux.c` calls FFmpeg functions by their C symbol names, so the Rust code
+// never references `mini-ffmpeg-sys`. Rust does not link unreferenced dependency
+// crates, so this declaration exists solely to ensure it is linked.
 extern crate mini_ffmpeg_sys as _;
 
 mod remux_c {
-    // マクロの呼び出しは、ビルドスクリプトが `OUT_DIR` に書き出している。FFmpeg の
-    // 生成物がターゲットごとのディレクトリにあり、そのパスをマクロに書くには、
-    // ターゲットを知っている必要があるため。書き出す内容は次の通りで、C コンパイラの
-    // オプションに当たる指定を再現してから、`.c` を丸ごと include している。
-    // FFmpeg のソースには手を加えていない。
+    // The build script writes the macro invocation to `OUT_DIR`. FFmpeg's
+    // generated files live in target-specific directories, so writing their
+    // paths into the macro requires knowing the target. The generated invocation
+    // reproduces the settings corresponding to C compiler options, then includes
+    // the entire `.c` file. The FFmpeg source is not modified.
     //
-    // - `#pragma cinrs export` を付けない。ここの関数は Rust から呼ぶだけで、
-    //   他の翻訳単位から参照されない。
-    // - `#pragma cinrs system_include first` で、プラットフォームのヘッダを
-    //   cinrs 同梱のヘッダより先に探させる。FFmpeg 本体の変換と同じ指定。
+    // - Omit `#pragma cinrs export`: these functions are only called from Rust,
+    //   not referenced by other translation units.
+    // - Use `#pragma cinrs system_include first` to search platform headers before
+    //   cinrs's bundled headers, as when translating the FFmpeg implementation.
     // - Platform replacements are generated from the sys crate's shared policy.
     //   The build script validates their uses before the macro translates C.
-    // - `HAVE_AV_CONFIG_H` などを定義しない。`remux.c` は FFmpeg を使う側の
-    //   プログラムで、公開のヘッダだけを include する。
-    // - `main` を別の名前に変える。Rust のプログラムの入口と衝突させず、普通の
-    //   関数として呼べるようにするため。
+    // - Do not define `HAVE_AV_CONFIG_H` or similar macros: `remux.c` is a
+    //   consumer of FFmpeg and only includes public headers.
+    // - Rename `main` so it can be called as an ordinary function without
+    //   conflicting with the Rust program's entry point.
     include!(concat!(env!("OUT_DIR"), "/remux_c.rs"));
 }
 
-/// `remux.c` の `main` を呼び、`input` のストリームを再エンコードせずに `output` へ
-/// 書き出す。戻り値は `main` の終了コードで、成功なら 0。
+/// Calls `main` from `remux.c` to write streams from `input` to `output` without
+/// re-encoding. Returns the exit code from `main`, with 0 indicating success.
 ///
-/// 出力のフォーマットは、`remux.c` が `output` の拡張子から決める。
+/// `remux.c` determines the output format from the extension of `output`.
 ///
 /// # Panics
 ///
-/// パスに NUL 文字が含まれている場合。
+/// Panics if either path contains a NUL byte.
 pub fn remux(input: &Path, output: &Path) -> i32 {
     let arguments = [
-        // `argv[0]`。`remux.c` は使い方の表示にしか使わない。
+        // `argv[0]`: `remux.c` only uses it in the usage message.
         CString::new("remux").unwrap(),
         path_to_c_string(input),
         path_to_c_string(output),
     ];
 
-    // C の `main` は `char **argv` を受け取り、`argv[argc]` は `NULL` と決まって
-    // いる。`remux.c` は引数を書き換えないが、型に合わせて可変のポインタにする。
+    // C's `main` takes `char **argv`, with `argv[argc]` required to be `NULL`.
+    // `remux.c` does not modify the arguments, but use mutable pointers to match
+    // the parameter type.
     let mut argv: Vec<*mut c_char> = arguments
         .iter()
         .map(|argument| argument.as_ptr().cast_mut())
@@ -71,5 +73,5 @@ pub fn remux(input: &Path, output: &Path) -> i32 {
 }
 
 fn path_to_c_string(path: &Path) -> CString {
-    CString::new(path.as_os_str().as_encoded_bytes()).expect("パスに NUL 文字が無い")
+    CString::new(path.as_os_str().as_encoded_bytes()).expect("path contains no NUL bytes")
 }
